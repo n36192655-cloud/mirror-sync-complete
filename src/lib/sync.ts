@@ -138,6 +138,15 @@ export async function removePending(clientId: string): Promise<void> {
   notify();
 }
 
+/** إعادة محاولة يدوية لعنصر فاشل — يعيده إلى الطابور فوراً دون انتظار المهلة. */
+export async function retryPending(clientId: string): Promise<void> {
+  const item = await idbGet<PendingReading>(STORE_QUEUE, clientId);
+  if (!item || item.status === "synced") return;
+  await idbPut(STORE_QUEUE, { ...item, status: "pending", lastError: undefined, lastAttemptAt: undefined });
+  notify();
+  await syncPending(true);
+}
+
 export async function getPendingPhoto(clientId: string): Promise<Blob | undefined> {
   return idbGet<Blob>(STORE_BLOBS, clientId);
 }
