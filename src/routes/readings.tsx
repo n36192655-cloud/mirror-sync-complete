@@ -71,6 +71,10 @@ function ReadingsPage() {
   const [photoBlob, setPhotoBlob] = useState<Blob | null>(null);
   const [photoPreview, setPhotoPreview] = useState<string | undefined>();
   const [ocrSerial, setOcrSerial] = useState<string | undefined>();
+  const [ocrReading, setOcrReading] = useState<number | null>(null);
+  const [ocrOthers, setOcrOthers] = useState<string[]>([]);
+  const [ocrBusy, setOcrBusy] = useState(false);
+
   const [geo, setGeo] = useState<GeoFix | null>(null);
   const [geoBusy, setGeoBusy] = useState(false);
   const [saving, setSaving] = useState(false);
