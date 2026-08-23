@@ -155,7 +155,26 @@ function readyForRetry(p: PendingReading): boolean {
   return Date.now() - +new Date(p.lastAttemptAt) >= wait;
 }
 
+/**
+ * فشل ناتج عن انقطاع الشبكة (وليس رفضاً من الخادم) — عندها تُحفظ العملية
+ * محلياً بدل اعتبارها خطأً نهائياً. `navigator.onLine` وحده غير كافٍ.
+ */
+export function isNetworkError(e: unknown): boolean {
+  if (typeof navigator !== "undefined" && !navigator.onLine) return true;
+  const msg = (e instanceof Error ? e.message : String(e ?? "")).toLowerCase();
+  return (
+    e instanceof TypeError ||
+    msg.includes("failed to fetch") ||
+    msg.includes("network") ||
+    msg.includes("networkerror") ||
+    msg.includes("load failed") ||
+    msg.includes("timeout") ||
+    msg.includes("aborted")
+  );
+}
+
 let syncing = false;
+
 
 export async function syncPending(force = false): Promise<{ synced: number; failed: number }> {
   if (syncing) return { synced: 0, failed: 0 };
