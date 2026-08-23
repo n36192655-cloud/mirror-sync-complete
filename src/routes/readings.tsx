@@ -246,17 +246,49 @@ function ReadingsPage() {
     if (!m) toast.error("لا يوجد عداد مرتبط بهذا المشترك — اربط عداداً من صفحة المشتركين");
   }
 
-  function handleCapture(file: File, previewUrl: string) {
+  async function handleCapture(file: File, previewUrl: string) {
     setPhotoBlob(file);
     setPhotoPreview(previewUrl);
     setOcrSerial(undefined);
+    setOcrReading(null);
+    setOcrOthers([]);
     toast.success("تم إرفاق صورة العداد");
+
+    // قراءة أرقام العداد من الصورة (اقتراح فقط — لا يُحفظ ولا يُحسب تلقائياً)
+    setOcrBusy(true);
+    try {
+      const { recognizeMeterImage } = await import("@/lib/meter-ocr");
+      const res = await recognizeMeterImage(file, {
+        knownMeterNumber: meterNumber || undefined,
+        previousReading: lastReading?.current_reading ?? null,
+      });
+      if (res.meterNumberMatch) setOcrSerial(res.meterNumberMatch);
+      setOcrReading(res.readingValue);
+      setOcrOthers(
+        res.otherTokens
+          .filter((t) => t.kind !== "meter-number" && /[0-9]/.test(t.text))
+          .slice(0, 8)
+          .map((t) => t.text)
+      );
+      if (res.readingValue == null) {
+        toast.info("تعذر استخراج القراءة من الصورة — أدخلها يدوياً");
+      }
+    } catch (e) {
+      console.error("OCR error:", e);
+      toast.info("تعذر تشغيل قراءة الصورة — أدخل القراءة يدوياً");
+    } finally {
+      setOcrBusy(false);
+    }
   }
 
   function clearPhoto() {
     setPhotoBlob(null);
     setPhotoPreview(undefined);
+    setOcrSerial(undefined);
+    setOcrReading(null);
+    setOcrOthers([]);
   }
+
 
   async function captureGeo() {
     setGeoBusy(true);
