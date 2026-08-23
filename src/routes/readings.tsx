@@ -16,8 +16,11 @@ import {
 import { fmtYER } from "@/lib/pricing";
 import { MeterCamera } from "@/components/meter-camera";
 import { getGeoFix, type GeoFix } from "@/lib/geolocation";
-import { addPending, useOfflineQueue, syncPending, isUnsynced, type PendingReading } from "@/lib/sync";
-import { readFieldCache, saveFieldCache, requestPersistentStorage } from "@/lib/offline-db";
+import { addPending, useOfflineQueue, syncPending, isUnsynced, isNetworkError, retryPending, type PendingReading } from "@/lib/sync";
+import {
+  readFieldCache, saveFieldCache, requestPersistentStorage,
+  saveReadingDraft, readReadingDraft, clearReadingDraft,
+} from "@/lib/offline-db";
 import type { Database } from "@/integrations/supabase/types";
 
 type CustomerRow = Database["public"]["Tables"]["customers"]["Row"];
@@ -170,6 +173,49 @@ function ReadingsPage() {
 
   useEffect(() => { void refresh(); }, [refresh]);
 
+  // ── استعادة مسودة القراءة الجارية (تصمد أمام إعادة التحميل/إغلاق التطبيق) ──
+  const [draftLoaded, setDraftLoaded] = useState(false);
+  useEffect(() => {
+    if (!tenantId) return;
+    let cancelled = false;
+    void readReadingDraft(tenantId).then((res) => {
+      if (cancelled) { setDraftLoaded(true); return; }
+      if (res) {
+        const d = res.draft;
+        setCustomerId(d.customerId);
+        setMeterId(d.meterId);
+        setCurrent(d.current);
+        setReadingDate(d.readingDate);
+        if (d.lat != null && d.lng != null) {
+          setGeo({ lat: d.lat, lng: d.lng, accuracy: d.accuracy ?? 0 } as GeoFix);
+        }
+        if (res.photo) {
+          setPhotoBlob(res.photo);
+          setPhotoPreview(URL.createObjectURL(res.photo));
+        }
+        if (d.current || res.photo) toast.info("تمت استعادة قراءة غير محفوظة من هذا الجهاز");
+      }
+      setDraftLoaded(true);
+    });
+    return () => { cancelled = true; };
+  }, [tenantId]);
+
+  // حفظ المسودة محلياً عند أي تغيير (بدون شبكة وبدون فقدان الصورة).
+  useEffect(() => {
+    if (!tenantId || !draftLoaded) return;
+    const empty = !customerId && !current && !photoBlob;
+    const t = setTimeout(() => {
+      if (empty) { void clearReadingDraft(tenantId); return; }
+      void saveReadingDraft(tenantId, {
+        customerId, meterId, current, readingDate,
+        lat: geo?.lat, lng: geo?.lng, accuracy: geo?.accuracy,
+        hasPhoto: !!photoBlob, photoType: photoBlob?.type,
+      }, photoBlob);
+    }, 400);
+    return () => clearTimeout(t);
+  }, [tenantId, draftLoaded, customerId, meterId, current, readingDate, geo, photoBlob]);
+
+
 
 
   useEffect(() => {
@@ -258,7 +304,8 @@ function ReadingsPage() {
     setOcrOthers([]);
     toast.success("تم إرفاق صورة العداد");
 
-    // قراءة أرقام العداد من الصورة (اقتراح فقط — لا يُحفظ ولا يُحسب تلقائياً)
+    // قراءة أرقام العداد من الصورة (اقتراح فقط — لا يُحفظ ولا يُحسب تلقائياً).
+    // بدون شبكة قد لا تتوفر ملفات التعرف — الصورة والقراءة اليدوية تعملان طبيعياً.
     setOcrBusy(true);
     try {
       const { recognizeMeterImage } = await import("@/lib/meter-ocr");
@@ -279,7 +326,11 @@ function ReadingsPage() {
       }
     } catch (e) {
       console.error("OCR error:", e);
-      toast.info("تعذر تشغيل قراءة الصورة — أدخل القراءة يدوياً");
+      toast.info(
+        typeof navigator !== "undefined" && !navigator.onLine
+          ? "وضع الأوفلاين — قراءة الصورة غير متاحة الآن، أدخل القراءة يدوياً (الصورة محفوظة)"
+          : "تعذر تشغيل قراءة الصورة — أدخل القراءة يدوياً",
+      );
     } finally {
       setOcrBusy(false);
     }
@@ -306,6 +357,7 @@ function ReadingsPage() {
   }
 
   function resetForm() {
+    if (tenantId) void clearReadingDraft(tenantId);
     setCurrent(""); setPhotoBlob(null); setPhotoPreview(undefined);
     setOcrSerial(undefined); setOcrReading(null); setOcrOthers([]); setGeo(null);
     setReadingDate(new Date().toISOString().slice(0, 10));
@@ -330,8 +382,8 @@ function ReadingsPage() {
     }
 
     setSaving(true);
+    const clientUuid = crypto.randomUUID();
     try {
-      const clientUuid = crypto.randomUUID();
 
       if (typeof navigator !== "undefined" && !navigator.onLine) {
         await addPending({
@@ -386,6 +438,30 @@ function ReadingsPage() {
       toast.success("تم حفظ القراءة — يجري إصدار الفاتورة تلقائياً");
       resetForm();
     } catch (e) {
+      // انقطاع الشبكة أثناء الحفظ أو رفع الصورة → لا تضيع القراءة: تُحفظ في الطابور.
+      if (isNetworkError(e)) {
+        try {
+          await addPending({
+            clientId: clientUuid,
+            meterId: selectedMeter.id,
+            meterNumber: selectedMeter.number,
+            customerId: customerId!,
+            current: +current,
+            readingDate,
+            by: user.userId,
+            latitude: fix?.lat,
+            longitude: fix?.lng,
+            accuracy: fix?.accuracy,
+            tenantId,
+          }, photoBlob);
+          toast.warning("انقطع الاتصال أثناء الحفظ — حُفظت القراءة والصورة محلياً وسترسل تلقائياً");
+          resetForm();
+          return;
+        } catch {
+          toast.error("تعذّر الحفظ محلياً — لا تغلق الصفحة وحاول مرة أخرى");
+          return;
+        }
+      }
       toast.error((e as Error).message);
     } finally { setSaving(false); }
   }
@@ -595,13 +671,21 @@ function ReadingsPage() {
                   </div>
                   {p.lastError && <div className="text-destructive">{p.lastError}</div>}
                 </div>
-                <Badge
-                  variant={
-                    p.status === "synced" ? "default" : p.status === "failed" ? "destructive" : "secondary"
-                  }
-                >
-                  {QUEUE_LABEL[p.status]}
-                </Badge>
+                <div className="flex items-center gap-2">
+                  <Badge
+                    variant={
+                      p.status === "synced" ? "default" : p.status === "failed" ? "destructive" : "secondary"
+                    }
+                  >
+                    {QUEUE_LABEL[p.status]}
+                  </Badge>
+                  {p.status === "failed" && (
+                    <Button size="sm" variant="outline" className="h-7"
+                      onClick={() => void retryPending(p.clientId)}>
+                      <RefreshCw className="w-3 h-3 ms-1" /> إعادة المحاولة
+                    </Button>
+                  )}
+                </div>
               </div>
             ))}
           </CardContent>
