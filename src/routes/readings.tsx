@@ -528,7 +528,7 @@ function ReadingsPage() {
               {saving ? <><Loader2 className="w-4 h-4 ms-1 animate-spin" /> جاري الحفظ…</> : "حفظ القراءة"}
             </Button>
 
-            {(photoPreview || ocrSerial || geo) && (
+            {(photoPreview || ocrSerial || ocrBusy || ocrReading != null || geo) && (
               <div className="flex flex-wrap gap-2 text-xs items-center">
                 {photoPreview && (
                   <>
@@ -536,14 +536,36 @@ function ReadingsPage() {
                     <img src={photoPreview} alt="preview" className="h-16 rounded border" />
                   </>
                 )}
+                {ocrBusy && (
+                  <Badge variant="secondary" className="gap-1">
+                    <Loader2 className="w-3 h-3 animate-spin" /> جاري قراءة الصورة…
+                  </Badge>
+                )}
                 {ocrSerial && (
                   <Badge variant={ocrSerial.replace(/[-\s]/g, "").toUpperCase() === meterNumber.replace(/[-\s]/g, "").toUpperCase() ? "default" : "destructive"} className="gap-1">
-                    <ShieldAlert className="w-3 h-3" /> OCR: {ocrSerial}
+                    <ShieldAlert className="w-3 h-3" /> رقم العداد مطابق: {ocrSerial}
+                  </Badge>
+                )}
+                {ocrReading != null && (
+                  <>
+                    <Badge variant="outline" className="gap-1">
+                      قراءة مقترحة من الصورة: <span className="font-mono" dir="ltr">{ocrReading}</span>
+                    </Badge>
+                    <Button type="button" size="sm" variant="outline"
+                      onClick={() => setCurrent(String(ocrReading))}>
+                      استخدام القراءة المقترحة
+                    </Button>
+                  </>
+                )}
+                {ocrOthers.length > 0 && (
+                  <Badge variant="secondary" className="gap-1" dir="ltr">
+                    أرقام أخرى: {ocrOthers.join(" · ")}
                   </Badge>
                 )}
                 {geo && <Badge variant="outline" className="gap-1"><MapPin className="w-3 h-3" /> {geo.lat.toFixed(4)}, {geo.lng.toFixed(4)}</Badge>}
               </div>
             )}
+
           </CardContent>
         </Card>
       )}
