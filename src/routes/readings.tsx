@@ -307,7 +307,7 @@ function ReadingsPage() {
 
   function resetForm() {
     setCurrent(""); setPhotoBlob(null); setPhotoPreview(undefined);
-    setOcrSerial(undefined); setGeo(null);
+    setOcrSerial(undefined); setOcrReading(null); setOcrOthers([]); setGeo(null);
     setReadingDate(new Date().toISOString().slice(0, 10));
   }
 
