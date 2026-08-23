@@ -334,12 +334,29 @@ export function useOnlineStatus() {
       }, 1000);
     };
     const off = () => setOnline(false);
+    // إعادة المحاولة أيضاً عند عودة التطبيق للواجهة وبشكل دوري — قد يعود
+    // الاتصال دون إطلاق حدث online (تغيّر شبكة، خروج من وضع الطيران…).
+    const retry = () => {
+      if (!navigator.onLine) return;
+      setOnline(true);
+      void syncPending().then((r) => {
+        if (r.synced > 0) toast.success(`تمت مزامنة ${r.synced} قراءة مؤجلة`);
+      });
+    };
+    const onVisible = () => { if (document.visibilityState === "visible") retry(); };
     window.addEventListener("online", on);
     window.addEventListener("offline", off);
+    document.addEventListener("visibilitychange", onVisible);
+    window.addEventListener("focus", retry);
+    const timer = setInterval(retry, 60_000);
     return () => {
       window.removeEventListener("online", on);
       window.removeEventListener("offline", off);
+      document.removeEventListener("visibilitychange", onVisible);
+      window.removeEventListener("focus", retry);
+      clearInterval(timer);
     };
+
   }, []);
 
   return online;
