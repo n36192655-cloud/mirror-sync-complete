@@ -138,6 +138,15 @@ export async function removePending(clientId: string): Promise<void> {
   notify();
 }
 
+/** إعادة محاولة يدوية لعنصر فاشل — يعيده إلى الطابور فوراً دون انتظار المهلة. */
+export async function retryPending(clientId: string): Promise<void> {
+  const item = await idbGet<PendingReading>(STORE_QUEUE, clientId);
+  if (!item || item.status === "synced") return;
+  await idbPut(STORE_QUEUE, { ...item, status: "pending", lastError: undefined, lastAttemptAt: undefined });
+  notify();
+  await syncPending(true);
+}
+
 export async function getPendingPhoto(clientId: string): Promise<Blob | undefined> {
   return idbGet<Blob>(STORE_BLOBS, clientId);
 }
@@ -155,7 +164,26 @@ function readyForRetry(p: PendingReading): boolean {
   return Date.now() - +new Date(p.lastAttemptAt) >= wait;
 }
 
+/**
+ * فشل ناتج عن انقطاع الشبكة (وليس رفضاً من الخادم) — عندها تُحفظ العملية
+ * محلياً بدل اعتبارها خطأً نهائياً. `navigator.onLine` وحده غير كافٍ.
+ */
+export function isNetworkError(e: unknown): boolean {
+  if (typeof navigator !== "undefined" && !navigator.onLine) return true;
+  const msg = (e instanceof Error ? e.message : String(e ?? "")).toLowerCase();
+  return (
+    e instanceof TypeError ||
+    msg.includes("failed to fetch") ||
+    msg.includes("network") ||
+    msg.includes("networkerror") ||
+    msg.includes("load failed") ||
+    msg.includes("timeout") ||
+    msg.includes("aborted")
+  );
+}
+
 let syncing = false;
+
 
 export async function syncPending(force = false): Promise<{ synced: number; failed: number }> {
   if (syncing) return { synced: 0, failed: 0 };
@@ -315,12 +343,29 @@ export function useOnlineStatus() {
       }, 1000);
     };
     const off = () => setOnline(false);
+    // إعادة المحاولة أيضاً عند عودة التطبيق للواجهة وبشكل دوري — قد يعود
+    // الاتصال دون إطلاق حدث online (تغيّر شبكة، خروج من وضع الطيران…).
+    const retry = () => {
+      if (!navigator.onLine) return;
+      setOnline(true);
+      void syncPending().then((r) => {
+        if (r.synced > 0) toast.success(`تمت مزامنة ${r.synced} قراءة مؤجلة`);
+      });
+    };
+    const onVisible = () => { if (document.visibilityState === "visible") retry(); };
     window.addEventListener("online", on);
     window.addEventListener("offline", off);
+    document.addEventListener("visibilitychange", onVisible);
+    window.addEventListener("focus", retry);
+    const timer = setInterval(retry, 60_000);
     return () => {
       window.removeEventListener("online", on);
       window.removeEventListener("offline", off);
+      document.removeEventListener("visibilitychange", onVisible);
+      window.removeEventListener("focus", retry);
+      clearInterval(timer);
     };
+
   }, []);
 
   return online;
