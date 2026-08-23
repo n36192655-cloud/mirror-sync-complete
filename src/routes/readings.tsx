@@ -200,6 +200,13 @@ function ReadingsPage() {
     return () => { cancelled = true; };
   }, [tenantId]);
 
+  // بعد استعادة مسودة، أعد ملء حقل البحث باسم المشترك عند توفر البيانات.
+  useEffect(() => {
+    if (!customerId || q) return;
+    const c = customers.find((x) => x.id === customerId);
+    if (c) setQ(`${c.name}${meterNumber ? " · " + meterNumber : ""}`);
+  }, [customerId, customers, meterNumber, q]);
+
   // حفظ المسودة محلياً عند أي تغيير (بدون شبكة وبدون فقدان الصورة).
   useEffect(() => {
     if (!tenantId || !draftLoaded) return;
