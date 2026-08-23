@@ -107,3 +107,44 @@ export async function saveFieldCache<T>(key: string, data: T): Promise<void> {
 export async function readFieldCache<T>(key: string): Promise<FieldSnapshot<T> | undefined> {
   return idbGet<FieldSnapshot<T>>(STORE_CACHE, key);
 }
+
+// ─── مسودة القراءة الجارية (لا تضيع عند إعادة تحميل الصفحة أو إغلاقها) ──────
+export interface ReadingDraft {
+  customerId: string | null;
+  meterId: string | null;
+  current: string;
+  readingDate: string;
+  lat?: number;
+  lng?: number;
+  accuracy?: number;
+  hasPhoto?: boolean;
+  photoType?: string;
+  savedAt: string;
+}
+
+const draftKey = (tenantId: string) => `draft:reading:${tenantId}`;
+const draftBlobKey = (tenantId: string) => `draft-photo:${tenantId}`;
+
+export async function saveReadingDraft(
+  tenantId: string,
+  draft: Omit<ReadingDraft, "savedAt">,
+  photo?: Blob | null,
+): Promise<void> {
+  await idbPut(STORE_CACHE, { ...draft, savedAt: new Date().toISOString() } satisfies ReadingDraft, draftKey(tenantId));
+  if (photo) await idbPut(STORE_BLOBS, photo, draftBlobKey(tenantId));
+  else await idbDelete(STORE_BLOBS, draftBlobKey(tenantId));
+}
+
+export async function readReadingDraft(
+  tenantId: string,
+): Promise<{ draft: ReadingDraft; photo?: Blob } | undefined> {
+  const draft = await idbGet<ReadingDraft>(STORE_CACHE, draftKey(tenantId));
+  if (!draft) return undefined;
+  const photo = draft.hasPhoto ? await idbGet<Blob>(STORE_BLOBS, draftBlobKey(tenantId)) : undefined;
+  return { draft, photo };
+}
+
+export async function clearReadingDraft(tenantId: string): Promise<void> {
+  await idbDelete(STORE_CACHE, draftKey(tenantId));
+  await idbDelete(STORE_BLOBS, draftBlobKey(tenantId));
+}
