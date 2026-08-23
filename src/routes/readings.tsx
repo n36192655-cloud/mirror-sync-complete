@@ -71,6 +71,10 @@ function ReadingsPage() {
   const [photoBlob, setPhotoBlob] = useState<Blob | null>(null);
   const [photoPreview, setPhotoPreview] = useState<string | undefined>();
   const [ocrSerial, setOcrSerial] = useState<string | undefined>();
+  const [ocrReading, setOcrReading] = useState<number | null>(null);
+  const [ocrOthers, setOcrOthers] = useState<string[]>([]);
+  const [ocrBusy, setOcrBusy] = useState(false);
+
   const [geo, setGeo] = useState<GeoFix | null>(null);
   const [geoBusy, setGeoBusy] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -246,17 +250,49 @@ function ReadingsPage() {
     if (!m) toast.error("لا يوجد عداد مرتبط بهذا المشترك — اربط عداداً من صفحة المشتركين");
   }
 
-  function handleCapture(file: File, previewUrl: string) {
+  async function handleCapture(file: File, previewUrl: string) {
     setPhotoBlob(file);
     setPhotoPreview(previewUrl);
     setOcrSerial(undefined);
+    setOcrReading(null);
+    setOcrOthers([]);
     toast.success("تم إرفاق صورة العداد");
+
+    // قراءة أرقام العداد من الصورة (اقتراح فقط — لا يُحفظ ولا يُحسب تلقائياً)
+    setOcrBusy(true);
+    try {
+      const { recognizeMeterImage } = await import("@/lib/meter-ocr");
+      const res = await recognizeMeterImage(file, {
+        knownMeterNumber: meterNumber || undefined,
+        previousReading: lastReading?.current_reading ?? null,
+      });
+      if (res.meterNumberMatch) setOcrSerial(res.meterNumberMatch);
+      setOcrReading(res.readingValue);
+      setOcrOthers(
+        res.otherTokens
+          .filter((t) => t.kind !== "meter-number" && /[0-9]/.test(t.text))
+          .slice(0, 8)
+          .map((t) => t.text)
+      );
+      if (res.readingValue == null) {
+        toast.info("تعذر استخراج القراءة من الصورة — أدخلها يدوياً");
+      }
+    } catch (e) {
+      console.error("OCR error:", e);
+      toast.info("تعذر تشغيل قراءة الصورة — أدخل القراءة يدوياً");
+    } finally {
+      setOcrBusy(false);
+    }
   }
 
   function clearPhoto() {
     setPhotoBlob(null);
     setPhotoPreview(undefined);
+    setOcrSerial(undefined);
+    setOcrReading(null);
+    setOcrOthers([]);
   }
+
 
   async function captureGeo() {
     setGeoBusy(true);
@@ -271,7 +307,7 @@ function ReadingsPage() {
 
   function resetForm() {
     setCurrent(""); setPhotoBlob(null); setPhotoPreview(undefined);
-    setOcrSerial(undefined); setGeo(null);
+    setOcrSerial(undefined); setOcrReading(null); setOcrOthers([]); setGeo(null);
     setReadingDate(new Date().toISOString().slice(0, 10));
   }
 
@@ -492,7 +528,7 @@ function ReadingsPage() {
               {saving ? <><Loader2 className="w-4 h-4 ms-1 animate-spin" /> جاري الحفظ…</> : "حفظ القراءة"}
             </Button>
 
-            {(photoPreview || ocrSerial || geo) && (
+            {(photoPreview || ocrSerial || ocrBusy || ocrReading != null || geo) && (
               <div className="flex flex-wrap gap-2 text-xs items-center">
                 {photoPreview && (
                   <>
@@ -500,14 +536,36 @@ function ReadingsPage() {
                     <img src={photoPreview} alt="preview" className="h-16 rounded border" />
                   </>
                 )}
+                {ocrBusy && (
+                  <Badge variant="secondary" className="gap-1">
+                    <Loader2 className="w-3 h-3 animate-spin" /> جاري قراءة الصورة…
+                  </Badge>
+                )}
                 {ocrSerial && (
                   <Badge variant={ocrSerial.replace(/[-\s]/g, "").toUpperCase() === meterNumber.replace(/[-\s]/g, "").toUpperCase() ? "default" : "destructive"} className="gap-1">
-                    <ShieldAlert className="w-3 h-3" /> OCR: {ocrSerial}
+                    <ShieldAlert className="w-3 h-3" /> رقم العداد مطابق: {ocrSerial}
+                  </Badge>
+                )}
+                {ocrReading != null && (
+                  <>
+                    <Badge variant="outline" className="gap-1">
+                      قراءة مقترحة من الصورة: <span className="font-mono" dir="ltr">{ocrReading}</span>
+                    </Badge>
+                    <Button type="button" size="sm" variant="outline"
+                      onClick={() => setCurrent(String(ocrReading))}>
+                      استخدام القراءة المقترحة
+                    </Button>
+                  </>
+                )}
+                {ocrOthers.length > 0 && (
+                  <Badge variant="secondary" className="gap-1" dir="ltr">
+                    أرقام أخرى: {ocrOthers.join(" · ")}
                   </Badge>
                 )}
                 {geo && <Badge variant="outline" className="gap-1"><MapPin className="w-3 h-3" /> {geo.lat.toFixed(4)}, {geo.lng.toFixed(4)}</Badge>}
               </div>
             )}
+
           </CardContent>
         </Card>
       )}

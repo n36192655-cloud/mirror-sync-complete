@@ -1,5 +1,5 @@
 import React, { useRef, useState, useCallback, useEffect } from "react";
-import { Camera, RefreshCw, Upload, Check, AlertCircle } from "lucide-react";
+import { Camera, RefreshCw, Upload, Check, AlertCircle, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 
@@ -16,7 +16,7 @@ interface MeterCameraProps {
  * - الناتج: File حقيقي جاهز للرفع السحابي إلى Supabase Storage Bucket (meter-readings)
  */
 const compressImage = (
-  source: HTMLVideoElement | HTMLImageElement,
+  source: HTMLVideoElement | HTMLImageElement | ImageBitmap,
   width: number,
   height: number
 ): Promise<{ file: File; previewUrl: string }> => {
@@ -50,7 +50,7 @@ const compressImage = (
     // تنعيم الصورة وحفظ حواف أرقام العداد بدقة عالية
     ctx.imageSmoothingEnabled = true;
     ctx.imageSmoothingQuality = "high";
-    ctx.drawImage(source, 0, 0, targetWidth, targetHeight);
+    ctx.drawImage(source as CanvasImageSource, 0, 0, targetWidth, targetHeight);
 
     canvas.toBlob(
       (blob) => {
@@ -72,6 +72,45 @@ const compressImage = (
   });
 };
 
+/** سلسلة قيود متدرجة: كاميرا خلفية للهاتف ← أي كاميرا خلفية ← أي كاميرا (لابتوب). */
+const CONSTRAINT_CHAIN: MediaStreamConstraints[] = [
+  {
+    video: {
+      facingMode: { exact: "environment" },
+      width: { ideal: 1920 },
+      height: { ideal: 1080 },
+    },
+    audio: false,
+  },
+  {
+    video: {
+      facingMode: { ideal: "environment" },
+      width: { ideal: 1920 },
+      height: { ideal: 1080 },
+    },
+    audio: false,
+  },
+  { video: { width: { ideal: 1280 }, height: { ideal: 720 } }, audio: false },
+  { video: true, audio: false },
+];
+
+function describeCameraError(err: unknown): string {
+  const name = (err as { name?: string })?.name ?? "";
+  switch (name) {
+    case "NotAllowedError":
+    case "SecurityError":
+      return "تم رفض إذن الكاميرا. افتح إعدادات المتصفح واسمح بالوصول للكاميرا لهذا الموقع، ثم أعد المحاولة. يمكنك بدلاً من ذلك اختيار صورة من المعرض.";
+    case "NotFoundError":
+    case "OverconstrainedError":
+      return "لم يتم العثور على كاميرا متاحة على هذا الجهاز. استخدم خيار اختيار صورة من المعرض.";
+    case "NotReadableError":
+    case "AbortError":
+      return "الكاميرا مشغولة من تطبيق آخر أو تعذّر تشغيلها. أغلق التطبيقات الأخرى التي تستخدم الكاميرا ثم أعد المحاولة.";
+    default:
+      return "تعذر فتح الكاميرا. تأكد من صلاحيات الكاميرا واستخدام اتصال آمن (HTTPS)، أو استخدم صورة من المعرض.";
+  }
+}
+
 export const MeterCamera: React.FC<MeterCameraProps> = ({
   onCapture,
   onClear,
@@ -80,34 +119,60 @@ export const MeterCamera: React.FC<MeterCameraProps> = ({
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
+  const previewUrlRef = useRef<string | null>(initialPreview ?? null);
 
   const [isCameraActive, setIsCameraActive] = useState<boolean>(false);
+  const [isStarting, setIsStarting] = useState<boolean>(false);
+  const [isStreamReady, setIsStreamReady] = useState<boolean>(false);
   const [previewUrl, setPreviewUrl] = useState<string | null>(initialPreview || null);
   const [error, setError] = useState<string | null>(null);
   const [isCompressing, setIsCompressing] = useState<boolean>(false);
 
-  // إيقاف بث الكاميرا وتفريغ الموارد
+  // إيقاف بث الكاميرا وتفريغ الموارد — يُستدعى عند الإلغاء والالتقاط وunmount
   const stopCamera = useCallback(() => {
-    if (streamRef.current) {
-      streamRef.current.getTracks().forEach((track) => track.stop());
+    const stream = streamRef.current;
+    if (stream) {
+      stream.getTracks().forEach((track) => {
+        try {
+          track.stop();
+        } catch {
+          /* تجاهل */
+        }
+      });
       streamRef.current = null;
     }
 
-    if (videoRef.current) {
-      videoRef.current.pause();
-      videoRef.current.srcObject = null;
+    const video = videoRef.current;
+    if (video) {
+      try {
+        video.pause();
+      } catch {
+        /* تجاهل */
+      }
+      video.srcObject = null;
+      video.removeAttribute("src");
+      video.load();
     }
 
+    setIsStreamReady(false);
     setIsCameraActive(false);
   }, []);
 
-  // تنظيف روابط ObjectURL لمنع تسريب الذاكرة
+  // تنظيف روابط ObjectURL لمنع تسريب الذاكرة (عبر ref حتى لا يتغير المرجع)
   const cleanupPreview = useCallback(() => {
-    if (previewUrl && previewUrl.startsWith("blob:")) {
-      URL.revokeObjectURL(previewUrl);
+    const url = previewUrlRef.current;
+    if (url && url.startsWith("blob:")) {
+      URL.revokeObjectURL(url);
     }
-  }, [previewUrl]);
+    previewUrlRef.current = null;
+  }, []);
 
+  const applyPreview = useCallback((url: string) => {
+    previewUrlRef.current = url;
+    setPreviewUrl(url);
+  }, []);
+
+  // تنظيف نهائي واحد فقط عند إزالة المكوّن — لا يعتمد على previewUrl المتغير
   useEffect(() => {
     return () => {
       stopCamera();
@@ -115,93 +180,148 @@ export const MeterCamera: React.FC<MeterCameraProps> = ({
     };
   }, [stopCamera, cleanupPreview]);
 
-  const startCamera = async () => {
-    setError(null);
+  // إيقاف البث إذا خرج المستخدم من التبويب/الصفحة (منع stream في الخلفية)
+  useEffect(() => {
+    if (!isCameraActive) return;
+    const onHide = () => {
+      if (document.visibilityState === "hidden") stopCamera();
+    };
+    document.addEventListener("visibilitychange", onHide);
+    window.addEventListener("pagehide", stopCamera);
+    return () => {
+      document.removeEventListener("visibilitychange", onHide);
+      window.removeEventListener("pagehide", stopCamera);
+    };
+  }, [isCameraActive, stopCamera]);
+
+  const attachStream = useCallback(async (stream: MediaStream) => {
+    const video = videoRef.current;
+    if (!video) return;
+
+    video.srcObject = stream;
+    video.muted = true;
+    video.setAttribute("playsinline", "true");
+    video.setAttribute("muted", "true");
+
+    // انتظار توفر أبعاد الفيديو فعلياً — يمنع الشاشة السوداء
+    if (video.readyState < 2) {
+      await new Promise<void>((resolve) => {
+        let done = false;
+        const finish = () => {
+          if (done) return;
+          done = true;
+          video.removeEventListener("loadedmetadata", finish);
+          resolve();
+        };
+        video.addEventListener("loadedmetadata", finish);
+        window.setTimeout(finish, 3000);
+      });
+    }
 
     try {
-      if (!navigator.mediaDevices?.getUserMedia) {
-        throw new Error("CAMERA_API_UNAVAILABLE");
-      }
-
-      // الحصول على بث الكاميرا أولًا
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: {
-          facingMode: "environment",
-          width: { ideal: 1920 },
-          height: { ideal: 1080 },
-        },
-        audio: false,
-      });
-
-      streamRef.current = stream;
-
-      // تشغيل وضع الكاميرا أولًا حتى يتم رسم عنصر video
-      setIsCameraActive(true);
-    } catch (err) {
-      console.error("Camera access error:", err);
-
-      setError(
-        "تعذر فتح الكاميرا الميدانية. يرجى التأكد من صلاحيات الكاميرا أو استخدام صورة من المعرض."
-      );
+      await video.play();
+    } catch {
+      // بعض المتصفحات تمنع التشغيل التلقائي — إعادة محاولة صامتة
+      video.muted = true;
+      await video.play().catch(() => undefined);
     }
-  };
+  }, []);
 
-  // بعد ظهور عنصر video فعليًا، نربط به الـstream ونبدأ المعاينة
-  useEffect(() => {
-    if (!isCameraActive || !videoRef.current || !streamRef.current) {
+  const startCamera = useCallback(async () => {
+    setError(null);
+
+    if (typeof window !== "undefined" && !window.isSecureContext) {
+      setError(
+        "الكاميرا تتطلب اتصالاً آمناً (HTTPS). افتح التطبيق عبر رابط HTTPS أو استخدم صورة من المعرض."
+      );
       return;
     }
 
-    const video = videoRef.current;
-    const stream = streamRef.current;
+    if (!navigator.mediaDevices?.getUserMedia) {
+      setError(
+        "هذا المتصفح لا يدعم فتح الكاميرا مباشرة. استخدم خيار اختيار صورة من المعرض."
+      );
+      return;
+    }
 
-    video.srcObject = stream;
+    setIsStarting(true);
+    // إظهار عنصر الفيديو قبل الطلب حتى يكون الـref جاهزاً عند وصول البث
+    setIsCameraActive(true);
+    setIsStreamReady(false);
 
-    video
-      .play()
-      .catch((err) => {
-        console.error("Camera preview play error:", err);
-        setError(
-          "تعذر تشغيل معاينة الكاميرا. يرجى التأكد من صلاحيات الكاميرا ثم المحاولة مرة أخرى."
-        );
-      });
+    let stream: MediaStream | null = null;
+    let lastError: unknown = null;
 
-    return () => {
-      if (video.srcObject === stream) {
-        video.pause();
-        video.srcObject = null;
+    for (const constraints of CONSTRAINT_CHAIN) {
+      try {
+        stream = await navigator.mediaDevices.getUserMedia(constraints);
+        break;
+      } catch (err) {
+        lastError = err;
       }
-    };
-  }, [isCameraActive]);
+    }
+
+    if (!stream) {
+      console.error("Camera access error:", lastError);
+      setIsStarting(false);
+      setIsCameraActive(false);
+      setError(describeCameraError(lastError));
+      return;
+    }
+
+    streamRef.current = stream;
+
+    // إذا أُلغيت العملية أثناء الانتظار، أوقف البث فوراً
+    if (!videoRef.current) {
+      stream.getTracks().forEach((t) => t.stop());
+      streamRef.current = null;
+      setIsStarting(false);
+      setIsCameraActive(false);
+      return;
+    }
+
+    try {
+      await attachStream(stream);
+      setIsStreamReady(true);
+    } catch (err) {
+      console.error("Camera preview error:", err);
+      setError("تعذر عرض معاينة الكاميرا. أعد المحاولة أو استخدم صورة من المعرض.");
+      stopCamera();
+    } finally {
+      setIsStarting(false);
+    }
+  }, [attachStream, stopCamera]);
 
   const capturePhoto = useCallback(async () => {
-    if (!videoRef.current) return;
+    const video = videoRef.current;
+    if (!video) return;
+
+    if (!video.videoWidth || !video.videoHeight) {
+      setError("لم تكتمل معاينة الكاميرا بعد. انتظر لحظة ثم أعد المحاولة.");
+      return;
+    }
 
     setIsCompressing(true);
     setError(null);
 
     try {
-      const video = videoRef.current;
-      const width = video.videoWidth || 1280;
-      const height = video.videoHeight || 720;
-
       const { file, previewUrl: newPreview } = await compressImage(
         video,
-        width,
-        height
+        video.videoWidth,
+        video.videoHeight
       );
 
       cleanupPreview();
-      setPreviewUrl(newPreview);
+      applyPreview(newPreview);
       stopCamera();
       onCapture(file, newPreview);
-    } catch (err: any) {
+    } catch (err) {
       console.error("Error capturing meter photo:", err);
       setError("حدث خطأ أثناء التقاط وضغط صورة العداد.");
     } finally {
       setIsCompressing(false);
     }
-  }, [stopCamera, onCapture, cleanupPreview]);
+  }, [stopCamera, onCapture, cleanupPreview, applyPreview]);
 
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const selectedFile = e.target.files?.[0];
@@ -230,10 +350,10 @@ export const MeterCamera: React.FC<MeterCameraProps> = ({
         URL.revokeObjectURL(objectUrl);
 
         cleanupPreview();
-        setPreviewUrl(newPreview);
+        applyPreview(newPreview);
         stopCamera();
         onCapture(file, newPreview);
-      } catch (err: any) {
+      } catch (err) {
         console.error("Error compressing gallery image:", err);
         setError("تعذر معالجة وضغط الصورة المختارة.");
       } finally {
@@ -273,7 +393,7 @@ export const MeterCamera: React.FC<MeterCameraProps> = ({
           <Button
             type="button"
             onClick={startCamera}
-            disabled={isCompressing}
+            disabled={isCompressing || isStarting}
             className="gap-2 bg-primary text-primary-foreground"
           >
             <Camera className="w-4 h-4" />
@@ -290,16 +410,17 @@ export const MeterCamera: React.FC<MeterCameraProps> = ({
             <Upload className="w-4 h-4" />
             اختيار صورة من المعرض
           </Button>
-
-          <input
-            ref={fileInputRef}
-            type="file"
-            accept="image/jpeg,image/png,image/webp,image/jpg"
-            className="hidden"
-            onChange={handleFileUpload}
-          />
         </div>
       )}
+
+      {/* حقل الملف يبقى دائماً في الشجرة حتى لا يفقد المرجع */}
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept="image/*"
+        className="hidden"
+        onChange={handleFileUpload}
+      />
 
       {isCameraActive && (
         <div className="relative w-full max-w-md overflow-hidden rounded-lg bg-black aspect-video flex items-center justify-center">
@@ -307,14 +428,22 @@ export const MeterCamera: React.FC<MeterCameraProps> = ({
             ref={videoRef}
             className="w-full h-full object-cover"
             playsInline
+            autoPlay
             muted
           />
+
+          {!isStreamReady && (
+            <div className="absolute inset-0 flex items-center justify-center gap-2 text-sm text-white/90 bg-black/60">
+              <Loader2 className="w-4 h-4 animate-spin" />
+              جاري تشغيل الكاميرا…
+            </div>
+          )}
 
           <div className="absolute bottom-4 flex gap-4">
             <Button
               type="button"
               onClick={capturePhoto}
-              disabled={isCompressing}
+              disabled={isCompressing || !isStreamReady}
               variant="default"
               className="gap-2 bg-emerald-600 hover:bg-emerald-700 text-white"
             >
@@ -344,15 +473,26 @@ export const MeterCamera: React.FC<MeterCameraProps> = ({
             />
           </div>
 
-          <Button
-            type="button"
-            onClick={handleReset}
-            variant="outline"
-            className="gap-2 text-destructive border-destructive hover:bg-destructive/10"
-          >
-            <RefreshCw className="w-4 h-4" />
-            إعادة التقاط الصورة
-          </Button>
+          <div className="flex flex-wrap gap-2 justify-center">
+            <Button
+              type="button"
+              onClick={handleReset}
+              variant="outline"
+              className="gap-2 text-destructive border-destructive hover:bg-destructive/10"
+            >
+              <RefreshCw className="w-4 h-4" />
+              إعادة التقاط الصورة
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              className="gap-2"
+              onClick={() => fileInputRef.current?.click()}
+            >
+              <Upload className="w-4 h-4" />
+              اختيار صورة من المعرض
+            </Button>
+          </div>
         </div>
       )}
     </div>
