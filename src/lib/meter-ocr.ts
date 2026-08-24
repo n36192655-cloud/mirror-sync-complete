@@ -174,7 +174,14 @@ export async function recognizeMeterImage(
       })
       .sort((a, b) => b.score - a.score);
 
-    const best = scored[0] ?? null;
+    // استبعاد ما يساوي القراءة السابقة تماماً (لا يمثل تغيّراً جديداً)
+    const usable = scored.filter((c) => prev == null || c.shape.value !== prev);
+    const best = usable[0] ?? null;
+
+    // تقارب المرشحين ⇒ لا تخمين
+    const second = usable.find((c) => best && c.shape.value !== best.shape.value) ?? null;
+    const readingAmbiguous =
+      !!best && !!second && second.score >= best.score * 0.9;
 
     const tokens: OcrToken[] = cleaned.map((w) => ({
       text: w.text,
