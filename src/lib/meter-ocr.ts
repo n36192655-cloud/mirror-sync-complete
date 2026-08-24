@@ -89,6 +89,8 @@ export interface RecognizeOptions {
   knownMeterNumber?: string;
   /** القراءة السابقة — تُستخدم فقط لترجيح المرشح، لا لتغيير أي منطق حسابي */
   previousReading?: number | null;
+  /** أرقام معروفة من بيانات المشترك (هاتف، معرفات) تُستبعد من المرشحين */
+  excludeNumbers?: (string | number | null | undefined)[];
 }
 
 /**
