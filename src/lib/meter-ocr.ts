@@ -97,6 +97,98 @@ export interface RecognizeOptions {
  * تشغيل OCR على صورة العداد. لا يقوم بأي حفظ ولا أي حساب استهلاك —
  * يعيد النتيجة فقط ليؤكدها المستخدم يدوياً.
  */
+/** كلمة مستخرجة من نتيجة tesseract */
+interface FlatWord {
+  text: string;
+  confidence: number;
+  height: number;
+}
+
+/** tesseract.js v7 لا يعيد data.words — الكلمات موجودة داخل blocks */
+function flattenWords(data: unknown): FlatWord[] {
+  const out: FlatWord[] = [];
+  type W = { text?: string; confidence?: number; bbox?: { y0: number; y1: number } };
+  type L = { words?: W[] };
+  type P = { lines?: L[] };
+  type B = { paragraphs?: P[] };
+  const d = data as { blocks?: B[] | null; words?: W[] | null };
+
+  const push = (w?: W) => {
+    const text = (w?.text ?? "").trim();
+    if (!text) return;
+    out.push({
+      text,
+      confidence: typeof w?.confidence === "number" ? w.confidence : 0,
+      height: w?.bbox ? Math.abs(w.bbox.y1 - w.bbox.y0) : 0,
+    });
+  };
+
+  for (const b of d.blocks ?? []) {
+    for (const p of b?.paragraphs ?? []) {
+      for (const l of p?.lines ?? []) {
+        for (const w of l?.words ?? []) push(w);
+      }
+    }
+  }
+  // توافق مع الإصدارات القديمة
+  if (out.length === 0) for (const w of d.words ?? []) push(w);
+  return out;
+}
+
+/**
+ * تحسين الصورة قبل التعرف: تصغير معقول + تدرّج رمادي + زيادة تباين.
+ * يجري كلياً في المتصفح على canvas — بلا شبكة وبلا اعتماديات جديدة.
+ */
+async function preprocess(image: Blob | File | string): Promise<HTMLCanvasElement | Blob | File | string> {
+  try {
+    const src =
+      typeof image === "string" ? image : URL.createObjectURL(image);
+    const img = new Image();
+    img.crossOrigin = "anonymous";
+    await new Promise<void>((resolve, reject) => {
+      img.onload = () => resolve();
+      img.onerror = () => reject(new Error("image load failed"));
+      img.src = src;
+    });
+    const maxW = 1600;
+    const scale = img.naturalWidth > maxW ? maxW / img.naturalWidth : 1;
+    const w = Math.max(1, Math.round(img.naturalWidth * scale));
+    const h = Math.max(1, Math.round(img.naturalHeight * scale));
+    const canvas = document.createElement("canvas");
+    canvas.width = w;
+    canvas.height = h;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return image;
+    ctx.drawImage(img, 0, 0, w, h);
+    if (typeof image !== "string") URL.revokeObjectURL(src);
+
+    const px = ctx.getImageData(0, 0, w, h);
+    const a = px.data;
+    // رمادي + متوسط للسطوع
+    let sum = 0;
+    for (let i = 0; i < a.length; i += 4) {
+      const g = 0.299 * a[i] + 0.587 * a[i + 1] + 0.114 * a[i + 2];
+      a[i] = a[i + 1] = a[i + 2] = g;
+      sum += g;
+    }
+    const mean = sum / (a.length / 4);
+    // زيادة تباين حول المتوسط (بدون عتبة قاطعة تُفقد الخانات الرقمية)
+    const k = 1.6;
+    for (let i = 0; i < a.length; i += 4) {
+      const v = Math.max(0, Math.min(255, (a[i] - mean) * k + mean));
+      a[i] = a[i + 1] = a[i + 2] = v;
+    }
+    ctx.putImageData(px, 0, 0);
+    return canvas;
+  } catch {
+    return image;
+  }
+}
+
+/**
+ * تشغيل OCR على صورة العداد. لا يقوم بأي حفظ ولا أي حساب استهلاك —
+ * يعيد النتيجة فقط ليؤكدها المستخدم يدوياً.
+ */
 export async function recognizeMeterImage(
   image: Blob | File | string,
   options: RecognizeOptions = {}
@@ -109,35 +201,49 @@ export async function recognizeMeterImage(
   const worker = await createWorker("eng");
 
   try {
-    await worker.setParameters({
-      tessedit_char_whitelist: "0123456789.,:-/ ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz³°",
-    });
+    const input = await preprocess(image);
 
-    const { data } = await worker.recognize(image as never);
-    const rawText = data.text ?? "";
+    // ممر 1: نص عام (لالتقاط رقم العداد والوحدات والتواريخ)
+    const general = await worker.recognize(
+      input as never,
+      {},
+      { text: true, blocks: true } as never
+    );
+    const rawText = general.data.text ?? "";
+    const generalWords = flattenWords(general.data);
 
-    type RawWord = { text?: string; confidence?: number; bbox?: { y0: number; y1: number } };
-    const words: RawWord[] =
-      ((data as unknown as { words?: RawWord[] }).words ?? []).filter(Boolean);
+    // ممر 2: أرقام فقط — أدق بكثير لخانات العداد
+    let digitWords: FlatWord[] = [];
+    try {
+      await worker.setParameters({
+        tessedit_char_whitelist: "0123456789.,",
+      });
+      const digits = await worker.recognize(
+        input as never,
+        {},
+        { text: true, blocks: true } as never
+      );
+      digitWords = flattenWords(digits.data);
+      await worker.setParameters({ tessedit_char_whitelist: "" });
+    } catch {
+      digitWords = [];
+    }
 
     const knownSerialNorm = options.knownMeterNumber
       ? normalizeSerial(options.knownMeterNumber)
       : "";
 
-    // في حال لم توفّر النسخة قائمة الكلمات، نعود إلى تقسيم النص الخام.
-    const base =
-      words.length > 0
-        ? words.map((w) => ({
-            text: (w.text ?? "").trim(),
-            confidence: typeof w.confidence === "number" ? w.confidence : 0,
-            height: w.bbox ? Math.abs(w.bbox.y1 - w.bbox.y0) : 0,
-          }))
-        : rawText
+    const fallback: FlatWord[] =
+      generalWords.length === 0 && digitWords.length === 0
+        ? rawText
             .split(/\s+/)
             .filter(Boolean)
-            .map((t) => ({ text: t.trim(), confidence: 0, height: 0 }));
+            .map((t) => ({ text: t.trim(), confidence: 0, height: 0 }))
+        : [];
 
-    const cleaned = base.filter((w) => w.text.length > 0);
+    const cleaned = [...generalWords, ...digitWords, ...fallback].filter(
+      (w) => w.text.length > 0
+    );
 
     // أرقام معروفة أخرى من بيانات المشترك (هاتف، معرفات) — تُستبعد كلياً.
     const excluded = new Set(
@@ -159,6 +265,7 @@ export async function recognizeMeterImage(
           !UNIT_RE.test(w.text.trim()) &&
           !DATE_RE.test(normalizeDigits(w.text.trim()))
       );
+
 
     // الترجيح: حجم الخط (خانات العداد أكبر) ثم الثقة ثم القرب من القراءة السابقة.
     const prev = options.previousReading ?? null;
