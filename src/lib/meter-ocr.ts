@@ -34,6 +34,8 @@ export interface MeterOcrResult {
   readingValue: number | null;
   /** درجة ثقة القراءة المرشحة 0-100 */
   readingConfidence: number;
+  /** عدة مرشحين متقاربين — لا يجوز التخمين، يُطلب إدخال يدوي */
+  readingAmbiguous: boolean;
   /** بقية الأرقام والنصوص التي ظهرت على العداد (للعرض فقط) */
   otherTokens: OcrToken[];
 }
