@@ -316,12 +316,21 @@ function ReadingsPage() {
     setOcrBusy(true);
     try {
       const { recognizeMeterImage } = await import("@/lib/meter-ocr");
+      const selected = customers.find((c) => c.id === customerId);
       const res = await recognizeMeterImage(file, {
         knownMeterNumber: meterNumber || undefined,
         previousReading: lastReading?.current_reading ?? null,
+        excludeNumbers: [selected?.phone, meterNumber],
       });
       if (res.meterNumberMatch) setOcrSerial(res.meterNumberMatch);
       setOcrReading(res.readingValue);
+      // تعبئة تلقائية لخانة "القراءة الحالية" عند وجود قراءة موثوقة (قابلة للتعديل، ولا تُحفظ تلقائياً)
+      if (res.readingValue != null && !res.readingAmbiguous) {
+        setCurrent(String(res.readingValue));
+        toast.success(`تم استخراج القراءة الحالية: ${res.readingValue} — راجعها ثم احفظ`);
+      } else if (res.readingAmbiguous) {
+        toast.info("عدة قراءات محتملة في الصورة — أدخل القراءة الحالية يدوياً");
+      }
       setOcrOthers(
         res.otherTokens
           .filter((t) => t.kind !== "meter-number" && /[0-9]/.test(t.text))

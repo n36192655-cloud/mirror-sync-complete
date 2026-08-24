@@ -34,6 +34,8 @@ export interface MeterOcrResult {
   readingValue: number | null;
   /** درجة ثقة القراءة المرشحة 0-100 */
   readingConfidence: number;
+  /** عدة مرشحين متقاربين — لا يجوز التخمين، يُطلب إدخال يدوي */
+  readingAmbiguous: boolean;
   /** بقية الأرقام والنصوص التي ظهرت على العداد (للعرض فقط) */
   otherTokens: OcrToken[];
 }
@@ -87,6 +89,8 @@ export interface RecognizeOptions {
   knownMeterNumber?: string;
   /** القراءة السابقة — تُستخدم فقط لترجيح المرشح، لا لتغيير أي منطق حسابي */
   previousReading?: number | null;
+  /** أرقام معروفة من بيانات المشترك (هاتف، معرفات) تُستبعد من المرشحين */
+  excludeNumbers?: (string | number | null | undefined)[];
 }
 
 /**
@@ -135,13 +139,24 @@ export async function recognizeMeterImage(
 
     const cleaned = base.filter((w) => w.text.length > 0);
 
+    // أرقام معروفة أخرى من بيانات المشترك (هاتف، معرفات) — تُستبعد كلياً.
+    const excluded = new Set(
+      (options.excludeNumbers ?? [])
+        .filter((v) => v != null && String(v).trim() !== "")
+        .map((v) => normalizeSerial(String(v)))
+    );
+
     // مرشحو القراءة: أشكال أرقام صالحة، وليست رقم العداد المعروف، وليست تاريخاً.
     const candidates = cleaned
       .map((w) => ({ ...w, shape: readingShape(w.text) }))
       .filter(
         (w) =>
           w.shape.ok &&
+          w.shape.value != null &&
+          w.shape.value >= 0 &&
           normalizeSerial(w.text) !== knownSerialNorm &&
+          !excluded.has(normalizeSerial(w.text)) &&
+          !UNIT_RE.test(w.text.trim()) &&
           !DATE_RE.test(normalizeDigits(w.text.trim()))
       );
 
@@ -159,7 +174,14 @@ export async function recognizeMeterImage(
       })
       .sort((a, b) => b.score - a.score);
 
-    const best = scored[0] ?? null;
+    // استبعاد ما يساوي القراءة السابقة تماماً (لا يمثل تغيّراً جديداً)
+    const usable = scored.filter((c) => prev == null || c.shape.value !== prev);
+    const best = usable[0] ?? null;
+
+    // تقارب المرشحين ⇒ لا تخمين
+    const second = usable.find((c) => best && c.shape.value !== best.shape.value) ?? null;
+    const readingAmbiguous =
+      !!best && !!second && second.score >= best.score * 0.9;
 
     const tokens: OcrToken[] = cleaned.map((w) => ({
       text: w.text,
@@ -180,6 +202,7 @@ export async function recognizeMeterImage(
       readingCandidate: best ? best.text : null,
       readingValue: best ? best.shape.value : null,
       readingConfidence: best ? Math.round(best.confidence) : 0,
+      readingAmbiguous,
       otherTokens: tokens.filter((t) => t.kind !== "reading"),
     };
   } finally {
