@@ -202,6 +202,7 @@ export async function recognizeMeterImage(
       readingCandidate: best ? best.text : null,
       readingValue: best ? best.shape.value : null,
       readingConfidence: best ? Math.round(best.confidence) : 0,
+      readingAmbiguous,
       otherTokens: tokens.filter((t) => t.kind !== "reading"),
     };
   } finally {
