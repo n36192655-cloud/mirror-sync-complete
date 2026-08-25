@@ -306,10 +306,15 @@ export async function recognizeMeterImage(
       kind: classify(w.text, knownSerialNorm, best ? w.text === best.text : false),
     }));
 
+    // مطابقة رقم العداد: على مستوى الكلمة أو على النص المُجمَّع (قد يُقسَّم لكلمتين)
+    const joinedNorm = normalizeSerial(rawText);
     const meterNumberMatch =
-      knownSerialNorm && cleaned.some((w) => normalizeSerial(w.text) === knownSerialNorm)
+      knownSerialNorm &&
+      (cleaned.some((w) => normalizeSerial(w.text) === knownSerialNorm) ||
+        joinedNorm.includes(knownSerialNorm))
         ? (options.knownMeterNumber ?? null)
         : null;
+
 
     return {
       rawText,
