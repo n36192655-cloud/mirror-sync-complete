@@ -167,3 +167,49 @@
 @utility text-electric { color: var(--electric-2); }
 @utility bg-water-soft { background-color: var(--water-soft); }
 @utility bg-electric-soft { background-color: var(--electric-soft); }
+
+/* ── طباعة/تصدير PDF ──────────────────────────────────────────────
+   بدون هذه القواعد كان window.print() يُخرج التطبيق بالكامل (الشريط
+   الجانبي + جداول الفواتير/التحصيل الطويلة)، فتتأخر معاينة PDF كثيراً.
+   الآن يُطبع الإيصال (#printable) وحده فقط. */
+@media print {
+  @page {
+    size: A4 portrait;
+    margin: 10mm;
+  }
+
+  html,
+  body {
+    background: #fff !important;
+  }
+
+  /* اخفِ كل ما ليس الإيصال ولا يحتويه ولا هو داخله */
+  body:has(#printable) *:not(:has(#printable)):not(#printable):not(#printable *) {
+    display: none !important;
+  }
+
+  /* اجعل سلسلة الحاويات (بما فيها نافذة الحوار) شفافة وبلا تحويلات */
+  body:has(#printable) *:has(#printable) {
+    display: block !important;
+    position: static !important;
+    transform: none !important;
+    inset: auto !important;
+    max-width: none !important;
+    width: auto !important;
+    max-height: none !important;
+    height: auto !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    border: 0 !important;
+    box-shadow: none !important;
+    background: #fff !important;
+    overflow: visible !important;
+    animation: none !important;
+  }
+
+  #printable {
+    border: 0 !important;
+    box-shadow: none !important;
+    padding: 0 !important;
+  }
+}
