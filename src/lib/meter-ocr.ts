@@ -267,11 +267,12 @@ export async function recognizeMeterImage(
       );
 
 
-    // الترجيح: حجم الخط (خانات العداد أكبر) ثم الثقة ثم القرب من القراءة السابقة.
+    // الترجيح: حجم الخط (خانات العداد أكبر) ثم الثقة ثم عدد الخانات ثم القرب من القراءة السابقة.
     const prev = options.previousReading ?? null;
     const scored = candidates
       .map((c) => {
-        let score = c.height * 2 + c.confidence;
+        const digitLen = normalizeDigits(c.text).replace(/\D/g, "").length;
+        let score = c.height * 2 + c.confidence + digitLen * 8;
         if (prev != null && c.shape.value != null) {
           if (c.shape.value >= prev) score += 25;
           const delta = Math.abs(c.shape.value - prev);
@@ -282,13 +283,21 @@ export async function recognizeMeterImage(
       .sort((a, b) => b.score - a.score);
 
     // استبعاد ما يساوي القراءة السابقة تماماً (لا يمثل تغيّراً جديداً)
-    const usable = scored.filter((c) => prev == null || c.shape.value !== prev);
+    const filteredPrev = scored.filter((c) => prev == null || c.shape.value !== prev);
+    // توحيد المرشحين المتطابقين في القيمة (الممرّان قد يعيدان نفس الرقم)
+    const seen = new Set<number>();
+    const usable = filteredPrev.filter((c) => {
+      const v = c.shape.value as number;
+      if (seen.has(v)) return false;
+      seen.add(v);
+      return true;
+    });
     const best = usable[0] ?? null;
 
-    // تقارب المرشحين ⇒ لا تخمين
-    const second = usable.find((c) => best && c.shape.value !== best.shape.value) ?? null;
-    const readingAmbiguous =
-      !!best && !!second && second.score >= best.score * 0.9;
+    // تقارب حقيقي بين قيمتين مختلفتين ⇒ لا تخمين
+    const second = usable[1] ?? null;
+    const readingAmbiguous = !!best && !!second && second.score >= best.score * 0.97;
+
 
     const tokens: OcrToken[] = cleaned.map((w) => ({
       text: w.text,
@@ -297,10 +306,15 @@ export async function recognizeMeterImage(
       kind: classify(w.text, knownSerialNorm, best ? w.text === best.text : false),
     }));
 
+    // مطابقة رقم العداد: على مستوى الكلمة أو على النص المُجمَّع (قد يُقسَّم لكلمتين)
+    const joinedNorm = normalizeSerial(rawText);
     const meterNumberMatch =
-      knownSerialNorm && cleaned.some((w) => normalizeSerial(w.text) === knownSerialNorm)
+      knownSerialNorm &&
+      (cleaned.some((w) => normalizeSerial(w.text) === knownSerialNorm) ||
+        joinedNorm.includes(knownSerialNorm))
         ? (options.knownMeterNumber ?? null)
         : null;
+
 
     return {
       rawText,
