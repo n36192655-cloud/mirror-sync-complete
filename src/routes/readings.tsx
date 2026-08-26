@@ -312,44 +312,76 @@ function ReadingsPage() {
     toast.success("تم إرفاق صورة العداد");
 
     // قراءة أرقام العداد من الصورة (اقتراح فقط — لا يُحفظ ولا يُحسب تلقائياً).
-    // بدون شبكة قد لا تتوفر ملفات التعرف — الصورة والقراءة اليدوية تعملان طبيعياً.
+    // المسار الأول: AI OCR (نموذج رؤية) عند توفر الشبكة، ثم OCR المحلي كبديل.
     setOcrBusy(true);
-    try {
-      const { recognizeMeterImage } = await import("@/lib/meter-ocr");
-      const selected = customers.find((c) => c.id === customerId);
-      const res = await recognizeMeterImage(file, {
-        knownMeterNumber: meterNumber || undefined,
-        previousReading: lastReading?.current_reading ?? null,
-        excludeNumbers: [selected?.phone, meterNumber],
-      });
-      if (res.meterNumberMatch) setOcrSerial(res.meterNumberMatch);
-      setOcrReading(res.readingValue);
-      // تعبئة تلقائية لخانة "القراءة الحالية" عند وجود قراءة موثوقة (قابلة للتعديل، ولا تُحفظ تلقائياً)
-      if (res.readingValue != null && !res.readingAmbiguous) {
-        setCurrent(String(res.readingValue));
-        toast.success(`تم استخراج القراءة الحالية: ${res.readingValue} — راجعها ثم احفظ`);
-      } else if (res.readingAmbiguous) {
-        toast.info("عدة قراءات محتملة في الصورة — أدخل القراءة الحالية يدوياً");
+    const selected = customers.find((c) => c.id === customerId);
+    const prev = lastReading?.current_reading ?? null;
+
+    const applyReading = (value: number | null, ambiguous: boolean) => {
+      setOcrReading(value);
+      if (value != null && !ambiguous) {
+        setCurrent(String(value));
+        toast.success(`تم استخراج القراءة الحالية: ${value} — راجعها ثم احفظ`);
+        return true;
       }
-      setOcrOthers(
-        res.otherTokens
-          .filter((t) => t.kind !== "meter-number" && /[0-9]/.test(t.text))
-          .slice(0, 8)
-          .map((t) => t.text)
-      );
-      if (res.readingValue == null) {
-        toast.info("تعذر استخراج القراءة من الصورة — أدخلها يدوياً");
+      if (ambiguous) toast.info("عدة قراءات محتملة في الصورة — أدخل القراءة الحالية يدوياً");
+      return false;
+    };
+
+    let done = false;
+    const online = typeof navigator === "undefined" || navigator.onLine;
+    if (online) {
+      try {
+        const [{ imageToCompressedDataUrl }, { readMeterFromImage }] = await Promise.all([
+          import("@/lib/meter-ocr"),
+          import("@/lib/meter-vision.functions"),
+        ]);
+        const imageDataUrl = await imageToCompressedDataUrl(file);
+        const ai = await readMeterFromImage({
+          data: {
+            imageDataUrl,
+            knownMeterNumber: meterNumber || undefined,
+            previousReading: prev,
+          },
+        });
+        if (ai.meterNumber) setOcrSerial(ai.meterNumber);
+        setOcrOthers(ai.otherNumbers.slice(0, 8));
+        done = applyReading(ai.readingValue, ai.ambiguous);
+        if (ai.readingValue != null) done = true;
+      } catch (e) {
+        console.error("AI OCR error:", e);
       }
-    } catch (e) {
-      console.error("OCR error:", e);
-      toast.info(
-        typeof navigator !== "undefined" && !navigator.onLine
-          ? "وضع الأوفلاين — قراءة الصورة غير متاحة الآن، أدخل القراءة يدوياً (الصورة محفوظة)"
-          : "تعذر تشغيل قراءة الصورة — أدخل القراءة يدوياً",
-      );
-    } finally {
-      setOcrBusy(false);
     }
+
+    if (!done) {
+      try {
+        const { recognizeMeterImage } = await import("@/lib/meter-ocr");
+        const res = await recognizeMeterImage(file, {
+          knownMeterNumber: meterNumber || undefined,
+          previousReading: prev,
+          excludeNumbers: [selected?.phone, meterNumber],
+        });
+        if (res.meterNumberMatch) setOcrSerial(res.meterNumberMatch);
+        applyReading(res.readingValue, res.readingAmbiguous);
+        setOcrOthers(
+          res.otherTokens
+            .filter((t) => t.kind !== "meter-number" && /[0-9]/.test(t.text))
+            .slice(0, 8)
+            .map((t) => t.text)
+        );
+        if (res.readingValue == null) {
+          toast.info("تعذر استخراج القراءة من الصورة — أدخلها يدوياً");
+        }
+      } catch (e) {
+        console.error("OCR error:", e);
+        toast.info(
+          typeof navigator !== "undefined" && !navigator.onLine
+            ? "وضع الأوفلاين — قراءة الصورة غير متاحة الآن، أدخل القراءة يدوياً (الصورة محفوظة)"
+            : "تعذر تشغيل قراءة الصورة — أدخل القراءة يدوياً",
+        );
+      }
+    }
+    setOcrBusy(false);
   }
 
   function clearPhoto() {
