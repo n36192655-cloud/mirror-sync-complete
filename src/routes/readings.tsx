@@ -347,6 +347,18 @@ function ReadingsPage() {
         });
         if (ai.meterNumber) setOcrSerial(ai.meterNumber);
         setOcrOthers(ai.otherNumbers.slice(0, 8));
+        // تحقق أولاً: هل رقم العداد في الصورة يخص المشترك المحدد؟
+        if (meterNumber && ai.serialMatch === "mismatch") {
+          setPhotoBlob(null);
+          setPhotoPreview(undefined);
+          setOcrReading(null);
+          setCurrent("");
+          setOcrBusy(false);
+          toast.error(
+            `صورة مرفوضة: رقم العداد في الصورة (${ai.meterNumber}) لا يطابق عداد المشترك (${meterNumber}) — صوّر العداد الصحيح`,
+          );
+          return;
+        }
         done = applyReading(ai.readingValue, ai.ambiguous);
         if (ai.readingValue != null) done = true;
       } catch (e) {
