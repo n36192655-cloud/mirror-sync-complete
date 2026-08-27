@@ -16,6 +16,8 @@ export interface MeterVisionResult {
   otherNumbers: string[];
   /** لا يمكن الحسم — يُطلب إدخال يدوي */
   ambiguous: boolean;
+  /** مطابقة رقم العداد الظاهر في الصورة مع عداد المشترك المحدد */
+  serialMatch: "match" | "mismatch" | "unknown";
 }
 
 interface VisionInput {
@@ -70,6 +72,8 @@ export const readMeterFromImage = createServerFn({ method: "POST" })
 - لا تخمّن أبداً: إن كان شبّاك القراءة غير واضح أو ضبابي أو محجوب أو تحتمل خانة أكثر من رقم، اضبط ambiguous=true و readingValue=null.
 - confidence رقم من 0 إلى 100 يعبّر عن وضوح الخانات فعلياً.
 - readingDigits هو نص الخانات الصحيحة كما قرأتها بالضبط (مثال "00123").
+- meterNumber: اقرأ الرقم التسلسلي المطبوع على جسم العداد أو الملصق/الباركود كما هو بالضبط (حروف وأرقام)، وإن لم يظهر بوضوح أعده null.
+- otherNumbers: بقية الأرقام الظاهرة في الصورة (ملصقات، باركود، تواريخ) كنص.
 - أعد JSON فقط بلا أي شرح.`;
 
     const schema = {
@@ -99,6 +103,28 @@ export const readMeterFromImage = createServerFn({ method: "POST" })
       meterNumber: string | null;
       otherNumbers: string[];
       ambiguous: boolean;
+    }
+
+    /** مقارنة رقم العداد الظاهر بالصورة مع رقم عداد المشترك. */
+    function compareSerial(seen: string | null, others: string[]): "match" | "mismatch" | "unknown" {
+      const known = (data.knownMeterNumber ?? "").trim();
+      if (!known) return "unknown";
+      const clean = (v: string) => v.toUpperCase().replace(/[^A-Z0-9]/g, "");
+      const digits = (v: string) => v.replace(/\D/g, "").replace(/^0+/, "");
+      const k = clean(known);
+      const kd = digits(known);
+      if (!k) return "unknown";
+      const pool = [seen, ...others].filter((v): v is string => typeof v === "string" && v.trim() !== "");
+      if (pool.length === 0) return "unknown";
+      for (const raw of pool) {
+        const c = clean(raw);
+        const d = digits(raw);
+        if (!c) continue;
+        if (c === k || c.includes(k) || k.includes(c)) return "match";
+        if (kd && d && kd.length >= 3 && (d === kd || d.endsWith(kd) || kd.endsWith(d))) return "match";
+      }
+      // ظهر رقم عداد في الصورة لكنه لا يطابق
+      return seen && clean(seen) ? "mismatch" : "unknown";
     }
 
     async function runPass(model: string): Promise<Pass> {
@@ -203,7 +229,7 @@ export const readMeterFromImage = createServerFn({ method: "POST" })
       looksLikeSerial ||
       belowPrevious;
 
-    if (!needsVerify) return first;
+    if (!needsVerify) return { ...first, serialMatch: compareSerial(first.meterNumber, first.otherNumbers) };
 
     // ممر تحقق بنموذج أقوى — يُستدعى فقط عند الشك.
     let second: Pass | null = null;
@@ -214,9 +240,10 @@ export const readMeterFromImage = createServerFn({ method: "POST" })
     }
 
     if (!second) {
+      const m = compareSerial(first.meterNumber, first.otherNumbers);
       return looksLikeSerial || belowPrevious
-        ? { ...first, readingValue: null, ambiguous: true }
-        : first;
+        ? { ...first, readingValue: null, ambiguous: true, serialMatch: m }
+        : { ...first, serialMatch: m };
     }
 
     const secondBelow =
@@ -229,7 +256,12 @@ export const readMeterFromImage = createServerFn({ method: "POST" })
       String(Math.trunc(second.readingValue)) === knownDigits;
 
     if (second.readingValue == null || second.ambiguous || secondBelow || secondSerial) {
-      return { ...second, readingValue: null, ambiguous: true };
+      return {
+        ...second,
+        readingValue: null,
+        ambiguous: true,
+        serialMatch: compareSerial(second.meterNumber, second.otherNumbers),
+      };
     }
 
     const agree = first.readingValue === second.readingValue;
@@ -237,5 +269,6 @@ export const readMeterFromImage = createServerFn({ method: "POST" })
       ...second,
       confidence: agree ? Math.max(second.confidence, 95) : Math.min(second.confidence, 80),
       ambiguous: false,
+      serialMatch: compareSerial(second.meterNumber, second.otherNumbers),
     };
   });
