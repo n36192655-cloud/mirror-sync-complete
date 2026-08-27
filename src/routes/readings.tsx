@@ -678,11 +678,16 @@ function ReadingsPage() {
                     <Loader2 className="w-3 h-3 animate-spin" /> جاري قراءة الصورة…
                   </Badge>
                 )}
-                {ocrSerial && (
-                  <Badge variant={ocrSerial.replace(/[-\s]/g, "").toUpperCase() === meterNumber.replace(/[-\s]/g, "").toUpperCase() ? "default" : "destructive"} className="gap-1">
-                    <ShieldAlert className="w-3 h-3" /> رقم العداد مطابق: {ocrSerial}
-                  </Badge>
-                )}
+                {ocrSerial && (() => {
+                  const ok = ocrSerial.replace(/[-\s]/g, "").toUpperCase() ===
+                    meterNumber.replace(/[-\s]/g, "").toUpperCase();
+                  return (
+                    <Badge variant={ok ? "default" : "destructive"} className="gap-1">
+                      <ShieldAlert className="w-3 h-3" />
+                      {ok ? "رقم العداد مطابق" : "رقم العداد غير مطابق"}: {ocrSerial}
+                    </Badge>
+                  );
+                })()}
                 {ocrReading != null && (
                   <>
                     <Badge variant="outline" className="gap-1">
