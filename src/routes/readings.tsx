@@ -336,7 +336,8 @@ function ReadingsPage() {
           import("@/lib/meter-ocr"),
           import("@/lib/meter-vision.functions"),
         ]);
-        const imageDataUrl = await imageToCompressedDataUrl(file);
+        // دقة أعلى للممر الذكي — خانات العداد الصغيرة تحتاج تفاصيل أوضح
+        const imageDataUrl = await imageToCompressedDataUrl(file, 1600, 0.92);
         const ai = await readMeterFromImage({
           data: {
             imageDataUrl,

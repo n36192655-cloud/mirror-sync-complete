@@ -53,100 +53,189 @@ export const readMeterFromImage = createServerFn({ method: "POST" })
       .filter(Boolean)
       .join("\n");
 
-    const system = `أنت خبير في قراءة عدادات المياه من الصور.
-مهمتك: استخراج «القراءة الحالية» الظاهرة في خانات العدّاد (العدّاد الميكانيكي أو الشاشة الرقمية) فقط.
-قواعد صارمة:
-1. القراءة الحالية هي الأرقام الكبيرة داخل خانات العدّاد، وقد تشمل خانات حمراء (كسور) — تجاهل الخانات الحمراء/الكسرية إن كانت منفصلة واستخرج الجزء الصحيح.
-2. لا تخلط بين القراءة ورقم العداد التسلسلي المطبوع على الجسم أو الملصق.
-3. تجاهل التواريخ وسنة الصنع والوحدات (m3) وأرقام الهاتف والعلامات التجارية والرموز الفنية.
-4. إذا كانت الأرقام غير واضحة أو محتملة بأكثر من قراءة، اضبط ambiguous=true واترك readingValue=null. لا تخمّن أبداً.
-5. أعد JSON فقط بلا أي شرح.`;
+    const system = `أنت خبير متخصص في قراءة عدادات المياه من الصور (ميكانيكية بأسطوانات أرقام، أو شاشات رقمية LCD).
+
+خطوات إلزامية قبل الإجابة:
+1) حدّد مكان «شبّاك القراءة» (صف الخانات المتجاورة داخل إطار مستطيل في منتصف وجه العداد). هذا هو المصدر الوحيد للقراءة.
+2) اقرأ الخانات من اليسار إلى اليمين خانةً خانة، ولا تُسقط الأصفار في البداية.
+3) الخانات ذات الخلفية/الإطار الأحمر (أو المفصولة بفاصلة عشرية) هي كسور — استبعدها تماماً وأعد الجزء الصحيح فقط (عادة 4 إلى 8 خانات).
+4) إذا كانت أسطوانة بين رقمين (نصف دوران)، خذ الرقم الأدنى الظاهر بالكامل.
+
+ما يجب تجاهله تماماً (لا يدخل في readingValue إطلاقاً):
+- رقم العداد التسلسلي المطبوع على الجسم أو على ملصق/باركود (غالباً بخط أصغر وخارج شبّاك القراءة).
+- سنة الصنع والتواريخ، أرقام المعايرة، القطر (Q3, R160, DN15, 15mm)، الضغط، الوحدات (m3, m³, L)، أرقام الهاتف، اسم الشركة والموديل، أرقام الأختام والرموز الفنية.
+
+قواعد الحسم:
+- إن كانت هناك «قراءة سابقة» معطاة: القراءة الحالية يجب أن تكون أكبر منها أو مساوية لها وبفارق منطقي. إن خالفت نتيجتك ذلك فأعد فحص الخانات قبل الإجابة.
+- لا تخمّن أبداً: إن كان شبّاك القراءة غير واضح أو ضبابي أو محجوب أو تحتمل خانة أكثر من رقم، اضبط ambiguous=true و readingValue=null.
+- confidence رقم من 0 إلى 100 يعبّر عن وضوح الخانات فعلياً.
+- readingDigits هو نص الخانات الصحيحة كما قرأتها بالضبط (مثال "00123").
+- أعد JSON فقط بلا أي شرح.`;
 
     const schema = {
       type: "object",
       additionalProperties: false,
       properties: {
         readingValue: { type: ["number", "null"] },
+        readingDigits: { type: ["string", "null"] },
         confidence: { type: "number" },
         meterNumber: { type: ["string", "null"] },
         otherNumbers: { type: "array", items: { type: "string" } },
         ambiguous: { type: "boolean" },
       },
-      required: ["readingValue", "confidence", "meterNumber", "otherNumbers", "ambiguous"],
+      required: [
+        "readingValue",
+        "readingDigits",
+        "confidence",
+        "meterNumber",
+        "otherNumbers",
+        "ambiguous",
+      ],
     };
 
-    const res = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "Lovable-API-Key": apiKey,
-        "X-Lovable-AIG-SDK": "fetch",
-      },
-      body: JSON.stringify({
-        model: "google/gemini-3.7-flash",
-        messages: [
-          { role: "system", content: system },
-          {
-            role: "user",
-            content: [
-              {
-                type: "text",
-                text: `اقرأ القراءة الحالية من صورة عداد المياه هذه.\n${hints}`,
-              },
-              { type: "image_url", image_url: { url: data.imageDataUrl } },
-            ],
-          },
-        ],
-        response_format: {
-          type: "json_schema",
-          json_schema: { name: "meter_reading", strict: true, schema },
-        },
-      }),
-    });
-
-    if (!res.ok) {
-      const body = await res.text().catch(() => "");
-      if (res.status === 429) throw new Error("الخدمة مزدحمة حالياً — أعد المحاولة بعد قليل");
-      if (res.status === 402) throw new Error("رصيد الذكاء الاصطناعي غير كافٍ");
-      throw new Error(`تعذر تحليل الصورة (${res.status}) ${body.slice(0, 160)}`);
+    interface Pass {
+      readingValue: number | null;
+      confidence: number;
+      meterNumber: string | null;
+      otherNumbers: string[];
+      ambiguous: boolean;
     }
 
-    const json = (await res.json()) as {
-      choices?: Array<{ message?: { content?: string } }>;
-    };
-    const content = json.choices?.[0]?.message?.content ?? "";
-    let parsed: Record<string, unknown> = {};
-    try {
-      parsed = JSON.parse(content) as Record<string, unknown>;
-    } catch {
-      const m = content.match(/\{[\s\S]*\}/);
-      if (m) {
-        try {
-          parsed = JSON.parse(m[0]) as Record<string, unknown>;
-        } catch {
-          parsed = {};
+    async function runPass(model: string): Promise<Pass> {
+      const res = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Lovable-API-Key": apiKey as string,
+          "X-Lovable-AIG-SDK": "fetch",
+        },
+        body: JSON.stringify({
+          model,
+          messages: [
+            { role: "system", content: system },
+            {
+              role: "user",
+              content: [
+                {
+                  type: "text",
+                  text: `اقرأ «القراءة الحالية» من شبّاك القراءة في صورة عداد المياه هذه، وتجاهل كل رقم آخر في الصورة.\n${hints}`,
+                },
+                { type: "image_url", image_url: { url: data.imageDataUrl } },
+              ],
+            },
+          ],
+          response_format: {
+            type: "json_schema",
+            json_schema: { name: "meter_reading", strict: true, schema },
+          },
+        }),
+      });
+
+      if (!res.ok) {
+        const body = await res.text().catch(() => "");
+        if (res.status === 429) throw new Error("الخدمة مزدحمة حالياً — أعد المحاولة بعد قليل");
+        if (res.status === 402) throw new Error("رصيد الذكاء الاصطناعي غير كافٍ");
+        throw new Error(`تعذر تحليل الصورة (${res.status}) ${body.slice(0, 160)}`);
+      }
+
+      const json = (await res.json()) as {
+        choices?: Array<{ message?: { content?: string } }>;
+      };
+      const content = json.choices?.[0]?.message?.content ?? "";
+      let parsed: Record<string, unknown> = {};
+      try {
+        parsed = JSON.parse(content) as Record<string, unknown>;
+      } catch {
+        const m = content.match(/\{[\s\S]*\}/);
+        if (m) {
+          try {
+            parsed = JSON.parse(m[0]) as Record<string, unknown>;
+          } catch {
+            parsed = {};
+          }
         }
       }
+
+      const rawReading = parsed["readingValue"];
+      let readingValue =
+        typeof rawReading === "number" && Number.isFinite(rawReading) && rawReading >= 0
+          ? rawReading
+          : null;
+      if (readingValue == null && typeof parsed["readingDigits"] === "string") {
+        const d = (parsed["readingDigits"] as string).replace(/[^\d]/g, "");
+        if (d.length >= 3 && d.length <= 8) readingValue = Number(d);
+      }
+      const rawConf = parsed["confidence"];
+      const confidence =
+        typeof rawConf === "number" && Number.isFinite(rawConf)
+          ? Math.max(0, Math.min(100, Math.round(rawConf <= 1 ? rawConf * 100 : rawConf)))
+          : 0;
+
+      return {
+        readingValue,
+        confidence,
+        meterNumber: typeof parsed["meterNumber"] === "string" ? parsed["meterNumber"] : null,
+        otherNumbers: Array.isArray(parsed["otherNumbers"])
+          ? parsed["otherNumbers"].map((v) => String(v)).slice(0, 8)
+          : [],
+        ambiguous: parsed["ambiguous"] === true,
+      };
     }
 
-    const rawReading = parsed["readingValue"];
-    const readingValue =
-      typeof rawReading === "number" && Number.isFinite(rawReading) && rawReading >= 0
-        ? rawReading
-        : null;
-    const rawConf = parsed["confidence"];
-    const confidence =
-      typeof rawConf === "number" && Number.isFinite(rawConf)
-        ? Math.max(0, Math.min(100, Math.round(rawConf <= 1 ? rawConf * 100 : rawConf)))
-        : 0;
+    // الممر الأول: نموذج سريع.
+    const first = await runPass("google/gemini-3.7-flash");
 
+    const knownDigits = (data.knownMeterNumber ?? "").replace(/\D/g, "").replace(/^0+/, "");
+    const looksLikeSerial =
+      knownDigits.length >= 4 &&
+      first.readingValue != null &&
+      String(Math.trunc(first.readingValue)) === knownDigits;
+
+    const belowPrevious =
+      data.previousReading != null &&
+      first.readingValue != null &&
+      first.readingValue < data.previousReading;
+
+    const needsVerify =
+      first.readingValue == null ||
+      first.ambiguous ||
+      first.confidence < 85 ||
+      looksLikeSerial ||
+      belowPrevious;
+
+    if (!needsVerify) return first;
+
+    // ممر تحقق بنموذج أقوى — يُستدعى فقط عند الشك.
+    let second: Pass | null = null;
+    try {
+      second = await runPass("google/gemini-3.1-pro-preview");
+    } catch {
+      second = null;
+    }
+
+    if (!second) {
+      return looksLikeSerial || belowPrevious
+        ? { ...first, readingValue: null, ambiguous: true }
+        : first;
+    }
+
+    const secondBelow =
+      data.previousReading != null &&
+      second.readingValue != null &&
+      second.readingValue < data.previousReading;
+    const secondSerial =
+      knownDigits.length >= 4 &&
+      second.readingValue != null &&
+      String(Math.trunc(second.readingValue)) === knownDigits;
+
+    if (second.readingValue == null || second.ambiguous || secondBelow || secondSerial) {
+      return { ...second, readingValue: null, ambiguous: true };
+    }
+
+    const agree = first.readingValue === second.readingValue;
     return {
-      readingValue,
-      confidence,
-      meterNumber: typeof parsed["meterNumber"] === "string" ? parsed["meterNumber"] : null,
-      otherNumbers: Array.isArray(parsed["otherNumbers"])
-        ? parsed["otherNumbers"].map((v) => String(v)).slice(0, 8)
-        : [],
-      ambiguous: parsed["ambiguous"] === true,
+      ...second,
+      confidence: agree ? Math.max(second.confidence, 95) : Math.min(second.confidence, 80),
+      ambiguous: false,
     };
   });
