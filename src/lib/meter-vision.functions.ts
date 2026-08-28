@@ -203,7 +203,7 @@ export const readMeterFromImage = createServerFn({ method: "POST" })
     }
 
     // الممر الأول: نموذج سريع.
-    const first = await runPass("google/gemini-3.7-flash");
+    const first = await runPass("gemini-2.5-flash");
 
     const knownDigits = (data.knownMeterNumber ?? "").replace(/\D/g, "").replace(/^0+/, "");
     const looksLikeSerial =
