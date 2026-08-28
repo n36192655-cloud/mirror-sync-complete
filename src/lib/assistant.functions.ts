@@ -81,25 +81,7 @@ export const askAssistant = createServerFn({ method: "POST" })
     const usedTools: string[] = [];
 
     for (let step = 0; step < 5; step++) {
-      const res = await fetch("https://generativelanguage.googleapis.com/v1beta/openai/chat/completions", {
-        method: "POST",
-        headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
-        body: JSON.stringify({
-          model: "gemini-3.7-flash",
-          messages,
-          tools: ASSISTANT_TOOLS,
-          temperature: 0.1,
-        }),
-      });
-
-      if (res.status === 429) throw new Error("تم تجاوز حد الاستخدام مؤقتاً، أعد المحاولة بعد قليل.");
-      if (res.status === 402) throw new Error("رصيد خدمة الذكاء الاصطناعي غير كافٍ.");
-      if (!res.ok) {
-        console.error("[assistant] gateway error", res.status, await res.text());
-        throw new Error("تعذّر الوصول إلى محرك الذكاء الاصطناعي.");
-      }
-
-      const payload = (await res.json()) as {
+      let payload: {
         choices?: Array<{
           message?: {
             content?: string | null;
@@ -107,6 +89,19 @@ export const askAssistant = createServerFn({ method: "POST" })
           };
         }>;
       };
+      try {
+        payload = (await geminiChat(apiKey, {
+          messages,
+          tools: ASSISTANT_TOOLS,
+          temperature: 0.1,
+        })) as typeof payload;
+      } catch (err) {
+        const status = err instanceof GeminiError ? err.status : 0;
+        if (status === 429) throw new Error("تم تجاوز حد الاستخدام مؤقتاً، أعد المحاولة بعد قليل.");
+        if (status === 402) throw new Error("رصيد خدمة الذكاء الاصطناعي غير كافٍ.");
+        throw new Error("تعذّر الوصول إلى محرك الذكاء الاصطناعي.");
+      }
+
       const msg = payload.choices?.[0]?.message;
       if (!msg) throw new Error("استجابة غير متوقعة من محرك الذكاء الاصطناعي.");
 
