@@ -80,21 +80,13 @@ export const readMeterFromImage = createServerFn({ method: "POST" })
       type: "object",
       additionalProperties: false,
       properties: {
-        readingValue: { type: ["number", "null"] },
-        readingDigits: { type: ["string", "null"] },
+        readingDigits: { type: "string", description: "خانات القراءة الصحيحة، أو نص فارغ إذا تعذّر" },
         confidence: { type: "number" },
-        meterNumber: { type: ["string", "null"] },
+        meterNumber: { type: "string", description: "الرقم التسلسلي، أو نص فارغ" },
         otherNumbers: { type: "array", items: { type: "string" } },
         ambiguous: { type: "boolean" },
       },
-      required: [
-        "readingValue",
-        "readingDigits",
-        "confidence",
-        "meterNumber",
-        "otherNumbers",
-        "ambiguous",
-      ],
+      required: ["readingDigits", "confidence", "meterNumber", "otherNumbers", "ambiguous"],
     };
 
     interface Pass {
