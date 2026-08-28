@@ -46,6 +46,8 @@ export const askAssistant = createServerFn({ method: "POST" })
     if (!apiKey) throw new Error("خدمة الذكاء الاصطناعي غير مهيأة (GEMINI_API_KEY مفقود).");
 
     const { ASSISTANT_TOOLS, runAssistantTool } = await import("./assistant/tools.server");
+    const { geminiChat, GeminiError } = await import("./gemini.server");
+
 
     const today = new Date().toISOString().slice(0, 10);
     const system = `أنت «ميزان الذكي»، مساعد تحليلي لمنصة إدارة مياه يمنية. تجيب بالعربية الفصحى المبسطة وبإيجاز مهني.
