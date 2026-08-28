@@ -119,17 +119,11 @@ export const readMeterFromImage = createServerFn({ method: "POST" })
       return seen && clean(seen) ? "mismatch" : "unknown";
     }
 
-    async function runPass(model: string): Promise<Pass> {
-      const res = await fetch(
-        "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
-        {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${apiKey as string}`,
-        },
-        body: JSON.stringify({
-          model,
+    async function runPass(): Promise<Pass> {
+      const { geminiChat, GeminiError } = await import("./gemini.server");
+      let json: { choices?: Array<{ message?: { content?: string } }> };
+      try {
+        json = (await geminiChat(apiKey as string, {
           messages: [
             { role: "system", content: system },
             {
@@ -147,20 +141,14 @@ export const readMeterFromImage = createServerFn({ method: "POST" })
             type: "json_schema",
             json_schema: { name: "meter_reading", schema },
           },
-        }),
-        },
-      );
-
-      if (!res.ok) {
-        const body = await res.text().catch(() => "");
-        if (res.status === 429) throw new Error("الخدمة مزدحمة حالياً — أعد المحاولة بعد قليل");
-        if (res.status === 402) throw new Error("رصيد الذكاء الاصطناعي غير كافٍ");
-        throw new Error(`تعذر تحليل الصورة (${res.status}) ${body.slice(0, 160)}`);
+        })) as typeof json;
+      } catch (err) {
+        const status = err instanceof GeminiError ? err.status : 0;
+        if (status === 429) throw new Error("الخدمة مزدحمة حالياً — أعد المحاولة بعد قليل");
+        if (status === 402) throw new Error("رصيد الذكاء الاصطناعي غير كافٍ");
+        throw new Error(`تعذر تحليل الصورة (${status})`);
       }
 
-      const json = (await res.json()) as {
-        choices?: Array<{ message?: { content?: string } }>;
-      };
       const content = json.choices?.[0]?.message?.content ?? "";
       let parsed: Record<string, unknown> = {};
       try {
@@ -175,6 +163,7 @@ export const readMeterFromImage = createServerFn({ method: "POST" })
           }
         }
       }
+
 
       const rawReading = parsed["readingValue"];
       let readingValue =
@@ -203,7 +192,7 @@ export const readMeterFromImage = createServerFn({ method: "POST" })
     }
 
     // الممر الأول: نموذج سريع.
-    const first = await runPass("gemini-3.7-flash");
+    const first = await runPass();
 
     const knownDigits = (data.knownMeterNumber ?? "").replace(/\D/g, "").replace(/^0+/, "");
     const looksLikeSerial =
@@ -228,7 +217,7 @@ export const readMeterFromImage = createServerFn({ method: "POST" })
     // ممر تحقق بنموذج أقوى — يُستدعى فقط عند الشك.
     let second: Pass | null = null;
     try {
-      second = await runPass("gemini-3.7-flash");
+      second = await runPass();
     } catch {
       second = null;
     }
