@@ -145,10 +145,11 @@ export const readMeterFromImage = createServerFn({ method: "POST" })
           ],
           response_format: {
             type: "json_schema",
-            json_schema: { name: "meter_reading", strict: true, schema },
+            json_schema: { name: "meter_reading", schema },
           },
         }),
-      });
+        },
+      );
 
       if (!res.ok) {
         const body = await res.text().catch(() => "");
