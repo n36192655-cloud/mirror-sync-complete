@@ -45,8 +45,8 @@ export const readMeterFromImage = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
   .inputValidator(validate)
   .handler(async ({ data }): Promise<MeterVisionResult> => {
-    const apiKey = process.env["LOVABLE_API_KEY"];
-    if (!apiKey) throw new Error("خدمة الذكاء الاصطناعي غير مهيأة (LOVABLE_API_KEY مفقود).");
+    const apiKey = process.env["GEMINI_API_KEY"];
+    if (!apiKey) throw new Error("خدمة الذكاء الاصطناعي غير مهيأة (GEMINI_API_KEY مفقود).");
 
     const hints = [
       data.knownMeterNumber ? `رقم العداد المعروف مسبقاً: ${data.knownMeterNumber}` : null,
@@ -80,21 +80,13 @@ export const readMeterFromImage = createServerFn({ method: "POST" })
       type: "object",
       additionalProperties: false,
       properties: {
-        readingValue: { type: ["number", "null"] },
-        readingDigits: { type: ["string", "null"] },
+        readingDigits: { type: "string", description: "خانات القراءة الصحيحة، أو نص فارغ إذا تعذّر" },
         confidence: { type: "number" },
-        meterNumber: { type: ["string", "null"] },
+        meterNumber: { type: "string", description: "الرقم التسلسلي، أو نص فارغ" },
         otherNumbers: { type: "array", items: { type: "string" } },
         ambiguous: { type: "boolean" },
       },
-      required: [
-        "readingValue",
-        "readingDigits",
-        "confidence",
-        "meterNumber",
-        "otherNumbers",
-        "ambiguous",
-      ],
+      required: ["readingDigits", "confidence", "meterNumber", "otherNumbers", "ambiguous"],
     };
 
     interface Pass {
@@ -128,12 +120,13 @@ export const readMeterFromImage = createServerFn({ method: "POST" })
     }
 
     async function runPass(model: string): Promise<Pass> {
-      const res = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
+      const res = await fetch(
+        "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
+        {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          "Lovable-API-Key": apiKey as string,
-          "X-Lovable-AIG-SDK": "fetch",
+          Authorization: `Bearer ${apiKey as string}`,
         },
         body: JSON.stringify({
           model,
@@ -152,10 +145,11 @@ export const readMeterFromImage = createServerFn({ method: "POST" })
           ],
           response_format: {
             type: "json_schema",
-            json_schema: { name: "meter_reading", strict: true, schema },
+            json_schema: { name: "meter_reading", schema },
           },
         }),
-      });
+        },
+      );
 
       if (!res.ok) {
         const body = await res.text().catch(() => "");
@@ -209,7 +203,7 @@ export const readMeterFromImage = createServerFn({ method: "POST" })
     }
 
     // الممر الأول: نموذج سريع.
-    const first = await runPass("google/gemini-3.7-flash");
+    const first = await runPass("gemini-2.5-flash");
 
     const knownDigits = (data.knownMeterNumber ?? "").replace(/\D/g, "").replace(/^0+/, "");
     const looksLikeSerial =
@@ -234,7 +228,7 @@ export const readMeterFromImage = createServerFn({ method: "POST" })
     // ممر تحقق بنموذج أقوى — يُستدعى فقط عند الشك.
     let second: Pass | null = null;
     try {
-      second = await runPass("google/gemini-3.1-pro-preview");
+      second = await runPass("gemini-2.5-flash");
     } catch {
       second = null;
     }

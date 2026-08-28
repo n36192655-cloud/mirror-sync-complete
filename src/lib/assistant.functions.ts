@@ -42,8 +42,8 @@ export const askAssistant = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
   .inputValidator(validateAsk)
   .handler(async ({ data, context }): Promise<AssistantAnswer> => {
-    const apiKey = process.env["LOVABLE_API_KEY"];
-    if (!apiKey) throw new Error("خدمة الذكاء الاصطناعي غير مهيأة (LOVABLE_API_KEY مفقود).");
+    const apiKey = process.env["GEMINI_API_KEY"];
+    if (!apiKey) throw new Error("خدمة الذكاء الاصطناعي غير مهيأة (GEMINI_API_KEY مفقود).");
 
     const { ASSISTANT_TOOLS, runAssistantTool } = await import("./assistant/tools.server");
 
@@ -81,11 +81,11 @@ export const askAssistant = createServerFn({ method: "POST" })
     const usedTools: string[] = [];
 
     for (let step = 0; step < 5; step++) {
-      const res = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
+      const res = await fetch("https://generativelanguage.googleapis.com/v1beta/openai/chat/completions", {
         method: "POST",
         headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
         body: JSON.stringify({
-          model: "google/gemini-2.5-flash",
+          model: "gemini-2.5-flash",
           messages,
           tools: ASSISTANT_TOOLS,
           temperature: 0.1,
