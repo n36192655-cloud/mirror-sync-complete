@@ -228,7 +228,7 @@ export const readMeterFromImage = createServerFn({ method: "POST" })
     // ممر تحقق بنموذج أقوى — يُستدعى فقط عند الشك.
     let second: Pass | null = null;
     try {
-      second = await runPass("google/gemini-3.1-pro-preview");
+      second = await runPass("gemini-2.5-flash");
     } catch {
       second = null;
     }
