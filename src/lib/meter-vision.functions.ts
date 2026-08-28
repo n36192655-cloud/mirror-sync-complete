@@ -45,8 +45,8 @@ export const readMeterFromImage = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
   .inputValidator(validate)
   .handler(async ({ data }): Promise<MeterVisionResult> => {
-    const apiKey = process.env["LOVABLE_API_KEY"];
-    if (!apiKey) throw new Error("خدمة الذكاء الاصطناعي غير مهيأة (LOVABLE_API_KEY مفقود).");
+    const apiKey = process.env["GEMINI_API_KEY"];
+    if (!apiKey) throw new Error("خدمة الذكاء الاصطناعي غير مهيأة (GEMINI_API_KEY مفقود).");
 
     const hints = [
       data.knownMeterNumber ? `رقم العداد المعروف مسبقاً: ${data.knownMeterNumber}` : null,
