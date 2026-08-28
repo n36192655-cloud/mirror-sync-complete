@@ -85,7 +85,7 @@ export const askAssistant = createServerFn({ method: "POST" })
         method: "POST",
         headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
         body: JSON.stringify({
-          model: "gemini-2.5-flash",
+          model: "gemini-3.7-flash",
           messages,
           tools: ASSISTANT_TOOLS,
           temperature: 0.1,
