@@ -192,7 +192,7 @@ export const readMeterFromImage = createServerFn({ method: "POST" })
     }
 
     // الممر الأول: نموذج سريع.
-    const first = await runPass("gemini-3.7-flash");
+    const first = await runPass();
 
     const knownDigits = (data.knownMeterNumber ?? "").replace(/\D/g, "").replace(/^0+/, "");
     const looksLikeSerial =
@@ -217,7 +217,7 @@ export const readMeterFromImage = createServerFn({ method: "POST" })
     // ممر تحقق بنموذج أقوى — يُستدعى فقط عند الشك.
     let second: Pass | null = null;
     try {
-      second = await runPass("gemini-3.7-flash");
+      second = await runPass();
     } catch {
       second = null;
     }
