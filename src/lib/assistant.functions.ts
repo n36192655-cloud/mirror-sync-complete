@@ -42,8 +42,8 @@ export const askAssistant = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
   .inputValidator(validateAsk)
   .handler(async ({ data, context }): Promise<AssistantAnswer> => {
-    const apiKey = process.env["LOVABLE_API_KEY"];
-    if (!apiKey) throw new Error("خدمة الذكاء الاصطناعي غير مهيأة (LOVABLE_API_KEY مفقود).");
+    const apiKey = process.env["GEMINI_API_KEY"];
+    if (!apiKey) throw new Error("خدمة الذكاء الاصطناعي غير مهيأة (GEMINI_API_KEY مفقود).");
 
     const { ASSISTANT_TOOLS, runAssistantTool } = await import("./assistant/tools.server");
 
