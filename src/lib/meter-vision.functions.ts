@@ -120,12 +120,13 @@ export const readMeterFromImage = createServerFn({ method: "POST" })
     }
 
     async function runPass(model: string): Promise<Pass> {
-      const res = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
+      const res = await fetch(
+        "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
+        {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          "Lovable-API-Key": apiKey as string,
-          "X-Lovable-AIG-SDK": "fetch",
+          Authorization: `Bearer ${apiKey as string}`,
         },
         body: JSON.stringify({
           model,
