@@ -118,6 +118,7 @@ export const MeterCamera: React.FC<MeterCameraProps> = ({
 }) => {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const nativeInputRef = useRef<HTMLInputElement | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const previewUrlRef = useRef<string | null>(initialPreview ?? null);
 
