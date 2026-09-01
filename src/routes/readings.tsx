@@ -303,98 +303,69 @@ function ReadingsPage() {
     if (!m) toast.error("لا يوجد عداد مرتبط بهذا المشترك — اربط عداداً من صفحة المشتركين");
   }
 
+  /**
+   * مسار واحد فقط لقراءة العداد: صورة → Gemini Vision → تحقق رقم العداد → القراءة الحالية.
+   * لا يوجد نموذج ثانٍ ولا OCR محلي متزامن — توفيراً للرصيد ومنعاً لتضارب النتائج.
+   */
   async function handleCapture(file: File, previewUrl: string) {
     setPhotoBlob(file);
     setPhotoPreview(previewUrl);
     setOcrSerial(undefined);
     setOcrReading(null);
     setOcrOthers([]);
-    toast.success("تم إرفاق صورة العداد");
+    setReadingApproved(false);
+    setCurrent("");
 
-    // قراءة أرقام العداد من الصورة (اقتراح فقط — لا يُحفظ ولا يُحسب تلقائياً).
-    // المسار الأول: AI OCR (نموذج رؤية) عند توفر الشبكة، ثم OCR المحلي كبديل.
-    setOcrBusy(true);
-    const selected = customers.find((c) => c.id === customerId);
-    const prev = lastReading?.current_reading ?? null;
+    if (!selectedMeter) {
+      toast.error("اختر المشترك أولاً — رقم العداد المرتبط مطلوب للتحقق قبل القراءة");
+      return;
+    }
 
-    const applyReading = (value: number | null, ambiguous: boolean) => {
-      setOcrReading(value);
-      if (value != null && !ambiguous) {
-        setCurrent(String(value));
-        toast.success(`تم استخراج القراءة الحالية: ${value} — راجعها ثم احفظ`);
-        return true;
-      }
-      if (ambiguous) toast.info("عدة قراءات محتملة في الصورة — أدخل القراءة الحالية يدوياً");
-      return false;
-    };
-
-    let done = false;
     const online = typeof navigator === "undefined" || navigator.onLine;
-    if (online) {
-      try {
-        const [{ imageToCompressedDataUrl }, { readMeterFromImage }] = await Promise.all([
-          import("@/lib/meter-ocr"),
-          import("@/lib/meter-vision.functions"),
-        ]);
-        // دقة أعلى للممر الذكي — خانات العداد الصغيرة تحتاج تفاصيل أوضح
-        const imageDataUrl = await imageToCompressedDataUrl(file, 1600, 0.92);
-        const ai = await readMeterFromImage({
-          data: {
-            imageDataUrl,
-            knownMeterNumber: meterNumber || undefined,
-            previousReading: prev,
-          },
-        });
-        if (ai.meterNumber) setOcrSerial(ai.meterNumber);
-        setOcrOthers(ai.otherNumbers.slice(0, 8));
-        // تحقق أولاً: هل رقم العداد في الصورة يخص المشترك المحدد؟
-        if (meterNumber && ai.serialMatch === "mismatch") {
-          setPhotoBlob(null);
-          setPhotoPreview(undefined);
-          setOcrReading(null);
-          setCurrent("");
-          setOcrBusy(false);
-          toast.error(
-            `صورة مرفوضة: رقم العداد في الصورة (${ai.meterNumber}) لا يطابق عداد المشترك (${meterNumber}) — صوّر العداد الصحيح`,
-          );
-          return;
-        }
-        done = applyReading(ai.readingValue, ai.ambiguous);
-        if (ai.readingValue != null) done = true;
-      } catch (e) {
-        console.error("AI OCR error:", e);
-      }
+    if (!online) {
+      toast.warning("بدون إنترنت — حُفظت الصورة محلياً، وتُستخرج القراءة أو تُدخل يدوياً ثم تُرسل عند عودة الشبكة");
+      return;
     }
 
-    if (!done) {
-      try {
-        const { recognizeMeterImage } = await import("@/lib/meter-ocr");
-        const res = await recognizeMeterImage(file, {
-          knownMeterNumber: meterNumber || undefined,
-          previousReading: prev,
-          excludeNumbers: [selected?.phone, meterNumber],
-        });
-        if (res.meterNumberMatch) setOcrSerial(res.meterNumberMatch);
-        applyReading(res.readingValue, res.readingAmbiguous);
-        setOcrOthers(
-          res.otherTokens
-            .filter((t) => t.kind !== "meter-number" && /[0-9]/.test(t.text))
-            .slice(0, 8)
-            .map((t) => t.text)
+    setOcrBusy(true);
+    const prev = lastReading?.current_reading ?? null;
+    try {
+      const [{ imageToCompressedDataUrl }, { readMeterFromImage }] = await Promise.all([
+        import("@/lib/meter-ocr"),
+        import("@/lib/meter-vision.functions"),
+      ]);
+      const imageDataUrl = await imageToCompressedDataUrl(file, 1600, 0.92);
+      const ai = await readMeterFromImage({
+        data: { imageDataUrl, knownMeterNumber: meterNumber || undefined, previousReading: prev },
+      });
+
+      if (ai.meterNumber) setOcrSerial(ai.meterNumber);
+      setOcrOthers(ai.otherNumbers.slice(0, 8));
+
+      // 1) التحقق من رقم العداد قبل أي استخراج للقراءة.
+      if (meterNumber && ai.serialMatch === "mismatch") {
+        clearPhoto();
+        toast.error(
+          `صورة مرفوضة: رقم العداد في الصورة (${ai.meterNumber ?? "—"}) لا يطابق عداد المشترك (${meterNumber}) — أعد تصوير العداد الصحيح`,
         );
-        if (res.readingValue == null) {
-          toast.info("تعذر استخراج القراءة من الصورة — أدخلها يدوياً");
-        }
-      } catch (e) {
-        console.error("OCR error:", e);
-        toast.info(
-          typeof navigator !== "undefined" && !navigator.onLine
-            ? "وضع الأوفلاين — قراءة الصورة غير متاحة الآن، أدخل القراءة يدوياً (الصورة محفوظة)"
-            : "تعذر تشغيل قراءة الصورة — أدخل القراءة يدوياً",
-        );
+        return;
       }
+
+      // 2) لا تخمين: قراءة غير مؤكدة = رفض وطلب إعادة تصوير.
+      if (ai.readingValue == null || ai.ambiguous) {
+        toast.error("القراءة غير واضحة في الصورة — أعد التصوير مع تقريب الأرقام داخل الإطار");
+        return;
+      }
+
+      setOcrReading(ai.readingValue);
+      setCurrent(String(ai.readingValue));
+      toast.success(`تم استخراج القراءة: ${ai.readingValue} — راجعها ثم اضغط «اعتماد القراءة»`);
+    } catch (e) {
+      console.error("Meter vision error:", e);
+      toast.error("تعذّر تحليل صورة العداد — أعد المحاولة أو أعد التصوير");
+    } finally {
+      setOcrBusy(false);
     }
-    setOcrBusy(false);
   }
 
   function clearPhoto() {
@@ -403,7 +374,10 @@ function ReadingsPage() {
     setOcrSerial(undefined);
     setOcrReading(null);
     setOcrOthers([]);
+    setReadingApproved(false);
+    setCurrent("");
   }
+
 
 
   async function captureGeo() {
