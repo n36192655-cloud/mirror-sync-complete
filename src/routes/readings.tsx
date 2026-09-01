@@ -110,6 +110,9 @@ function ReadingsPage() {
       .sort((a, b) => +new Date(b.created_at) - +new Date(a.created_at))[0] ?? null;
   }, [readings, meterId]);
 
+  const prevReading = lastReading?.current_reading ?? 0;
+  const consumption = current === "" || Number.isNaN(+current) ? 0 : +current - prevReading;
+
   const refresh = useCallback(async () => {
     if (!tenantId) return;
     setLoading(true);
