@@ -669,7 +669,7 @@ function ReadingsPage() {
               </div>
             </div>
 
-            <Button onClick={saveReading} size="lg" disabled={saving || geoBusy} className="w-full md:w-auto">
+            <Button onClick={saveReading} size="lg" disabled={saving || geoBusy || ocrBusy || !readingApproved} className="w-full md:w-auto">
               {saving ? <><Loader2 className="w-4 h-4 ms-1 animate-spin" /> جاري الحفظ…</> : "حفظ القراءة"}
             </Button>
 
