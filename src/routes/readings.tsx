@@ -408,7 +408,8 @@ function ReadingsPage() {
     if (!tenantId || !user) return toast.error("لا توجد جلسة نشطة");
     if (!selectedCustomer) return toast.error("اختر مشتركاً");
     if (!selectedMeter) return toast.error("لا يوجد عداد مرتبط بهذا المشترك");
-    if (current === "" || Number.isNaN(+current)) return toast.error("أدخل القراءة الحالية");
+    if (current === "" || Number.isNaN(+current)) return toast.error("صوّر العداد لاستخراج القراءة الحالية");
+    if (!readingApproved) return toast.error("اضغط «اعتماد القراءة» قبل الحفظ");
 
     if (ocrSerial &&
         ocrSerial.replace(/[-\s]/g, "").toUpperCase() !==
