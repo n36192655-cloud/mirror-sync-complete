@@ -620,9 +620,40 @@ function ReadingsPage() {
               </div>
               <div>
                 <Label>القراءة الحالية</Label>
-                <Input type="number" value={current} onChange={(e) => setCurrent(e.target.value)} />
+                <Input
+                  type="number" value={current}
+                  onChange={(e) => { setCurrent(e.target.value); setReadingApproved(false); }}
+                  placeholder={ocrBusy ? "جاري استخراج القراءة من الصورة…" : "تُملأ تلقائياً بعد تصوير العداد"}
+                />
               </div>
             </div>
+
+            {/* الاستهلاك المحسوب تلقائياً من السابقة والحالية */}
+            {current !== "" && !Number.isNaN(+current) && (
+              <div className="rounded-lg border p-3 bg-muted/30 grid grid-cols-3 gap-3 text-xs">
+                <Info label="القراءة السابقة"><span className="font-mono">{prevReading}</span></Info>
+                <Info label="القراءة الحالية"><span className="font-mono">{+current}</span></Info>
+                <Info label="الاستهلاك">
+                  <span className={`font-mono ${consumption < 0 ? "text-destructive" : ""}`}>
+                    {consumption.toFixed(1)} م³
+                  </span>
+                </Info>
+              </div>
+            )}
+
+            {/* موافقة القارئ — لا حفظ قبل الاعتماد */}
+            {current !== "" && !Number.isNaN(+current) && !readingApproved && (
+              <div className="flex flex-wrap gap-2 items-center rounded-lg border border-emerald-500/40 bg-emerald-500/5 p-3">
+                <span className="text-xs">راجع القراءة المستخرجة ثم اعتمدها، أو أعد التصوير إذا كانت غير صحيحة.</span>
+                <Button size="sm" onClick={() => { setReadingApproved(true); toast.success("تم اعتماد القراءة — يمكنك الحفظ الآن"); }}>
+                  <Check className="w-3 h-3 ms-1" /> اعتماد القراءة
+                </Button>
+                <Button size="sm" variant="outline" onClick={() => { clearPhoto(); setCameraOpen(true); }}>
+                  <Camera className="w-3 h-3 ms-1" /> إعادة التصوير
+                </Button>
+              </div>
+            )}
+
 
             <div className="grid md:grid-cols-2 gap-3">
               <div>
