@@ -397,6 +397,7 @@ function ReadingsPage() {
     if (tenantId) void clearReadingDraft(tenantId);
     setCurrent(""); setPhotoBlob(null); setPhotoPreview(undefined);
     setOcrSerial(undefined); setOcrReading(null); setOcrOthers([]); setGeo(null);
+    setReadingApproved(false);
     setReadingDate(new Date().toISOString().slice(0, 10));
   }
 
