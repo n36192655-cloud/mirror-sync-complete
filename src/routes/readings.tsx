@@ -77,6 +77,8 @@ function ReadingsPage() {
   const [ocrReading, setOcrReading] = useState<number | null>(null);
   const [ocrOthers, setOcrOthers] = useState<string[]>([]);
   const [ocrBusy, setOcrBusy] = useState(false);
+  /** لا تُحفظ القراءة قبل ضغط «اعتماد القراءة» من القارئ. */
+  const [readingApproved, setReadingApproved] = useState(false);
 
   const [geo, setGeo] = useState<GeoFix | null>(null);
   const [geoBusy, setGeoBusy] = useState(false);
@@ -107,6 +109,9 @@ function ReadingsPage() {
       .filter((r) => r.meter_id === meterId && r.status !== "rejected")
       .sort((a, b) => +new Date(b.created_at) - +new Date(a.created_at))[0] ?? null;
   }, [readings, meterId]);
+
+  const prevReading = lastReading?.current_reading ?? 0;
+  const consumption = current === "" || Number.isNaN(+current) ? 0 : +current - prevReading;
 
   const refresh = useCallback(async () => {
     if (!tenantId) return;
@@ -303,98 +308,69 @@ function ReadingsPage() {
     if (!m) toast.error("لا يوجد عداد مرتبط بهذا المشترك — اربط عداداً من صفحة المشتركين");
   }
 
+  /**
+   * مسار واحد فقط لقراءة العداد: صورة → Gemini Vision → تحقق رقم العداد → القراءة الحالية.
+   * لا يوجد نموذج ثانٍ ولا OCR محلي متزامن — توفيراً للرصيد ومنعاً لتضارب النتائج.
+   */
   async function handleCapture(file: File, previewUrl: string) {
     setPhotoBlob(file);
     setPhotoPreview(previewUrl);
     setOcrSerial(undefined);
     setOcrReading(null);
     setOcrOthers([]);
-    toast.success("تم إرفاق صورة العداد");
+    setReadingApproved(false);
+    setCurrent("");
 
-    // قراءة أرقام العداد من الصورة (اقتراح فقط — لا يُحفظ ولا يُحسب تلقائياً).
-    // المسار الأول: AI OCR (نموذج رؤية) عند توفر الشبكة، ثم OCR المحلي كبديل.
-    setOcrBusy(true);
-    const selected = customers.find((c) => c.id === customerId);
-    const prev = lastReading?.current_reading ?? null;
+    if (!selectedMeter) {
+      toast.error("اختر المشترك أولاً — رقم العداد المرتبط مطلوب للتحقق قبل القراءة");
+      return;
+    }
 
-    const applyReading = (value: number | null, ambiguous: boolean) => {
-      setOcrReading(value);
-      if (value != null && !ambiguous) {
-        setCurrent(String(value));
-        toast.success(`تم استخراج القراءة الحالية: ${value} — راجعها ثم احفظ`);
-        return true;
-      }
-      if (ambiguous) toast.info("عدة قراءات محتملة في الصورة — أدخل القراءة الحالية يدوياً");
-      return false;
-    };
-
-    let done = false;
     const online = typeof navigator === "undefined" || navigator.onLine;
-    if (online) {
-      try {
-        const [{ imageToCompressedDataUrl }, { readMeterFromImage }] = await Promise.all([
-          import("@/lib/meter-ocr"),
-          import("@/lib/meter-vision.functions"),
-        ]);
-        // دقة أعلى للممر الذكي — خانات العداد الصغيرة تحتاج تفاصيل أوضح
-        const imageDataUrl = await imageToCompressedDataUrl(file, 1600, 0.92);
-        const ai = await readMeterFromImage({
-          data: {
-            imageDataUrl,
-            knownMeterNumber: meterNumber || undefined,
-            previousReading: prev,
-          },
-        });
-        if (ai.meterNumber) setOcrSerial(ai.meterNumber);
-        setOcrOthers(ai.otherNumbers.slice(0, 8));
-        // تحقق أولاً: هل رقم العداد في الصورة يخص المشترك المحدد؟
-        if (meterNumber && ai.serialMatch === "mismatch") {
-          setPhotoBlob(null);
-          setPhotoPreview(undefined);
-          setOcrReading(null);
-          setCurrent("");
-          setOcrBusy(false);
-          toast.error(
-            `صورة مرفوضة: رقم العداد في الصورة (${ai.meterNumber}) لا يطابق عداد المشترك (${meterNumber}) — صوّر العداد الصحيح`,
-          );
-          return;
-        }
-        done = applyReading(ai.readingValue, ai.ambiguous);
-        if (ai.readingValue != null) done = true;
-      } catch (e) {
-        console.error("AI OCR error:", e);
-      }
+    if (!online) {
+      toast.warning("بدون إنترنت — حُفظت الصورة محلياً، وتُستخرج القراءة أو تُدخل يدوياً ثم تُرسل عند عودة الشبكة");
+      return;
     }
 
-    if (!done) {
-      try {
-        const { recognizeMeterImage } = await import("@/lib/meter-ocr");
-        const res = await recognizeMeterImage(file, {
-          knownMeterNumber: meterNumber || undefined,
-          previousReading: prev,
-          excludeNumbers: [selected?.phone, meterNumber],
-        });
-        if (res.meterNumberMatch) setOcrSerial(res.meterNumberMatch);
-        applyReading(res.readingValue, res.readingAmbiguous);
-        setOcrOthers(
-          res.otherTokens
-            .filter((t) => t.kind !== "meter-number" && /[0-9]/.test(t.text))
-            .slice(0, 8)
-            .map((t) => t.text)
+    setOcrBusy(true);
+    const prev = lastReading?.current_reading ?? null;
+    try {
+      const [{ imageToCompressedDataUrl }, { readMeterFromImage }] = await Promise.all([
+        import("@/lib/meter-ocr"),
+        import("@/lib/meter-vision.functions"),
+      ]);
+      const imageDataUrl = await imageToCompressedDataUrl(file, 1600, 0.92);
+      const ai = await readMeterFromImage({
+        data: { imageDataUrl, knownMeterNumber: meterNumber || undefined, previousReading: prev },
+      });
+
+      if (ai.meterNumber) setOcrSerial(ai.meterNumber);
+      setOcrOthers(ai.otherNumbers.slice(0, 8));
+
+      // 1) التحقق من رقم العداد قبل أي استخراج للقراءة.
+      if (meterNumber && ai.serialMatch === "mismatch") {
+        clearPhoto();
+        toast.error(
+          `صورة مرفوضة: رقم العداد في الصورة (${ai.meterNumber ?? "—"}) لا يطابق عداد المشترك (${meterNumber}) — أعد تصوير العداد الصحيح`,
         );
-        if (res.readingValue == null) {
-          toast.info("تعذر استخراج القراءة من الصورة — أدخلها يدوياً");
-        }
-      } catch (e) {
-        console.error("OCR error:", e);
-        toast.info(
-          typeof navigator !== "undefined" && !navigator.onLine
-            ? "وضع الأوفلاين — قراءة الصورة غير متاحة الآن، أدخل القراءة يدوياً (الصورة محفوظة)"
-            : "تعذر تشغيل قراءة الصورة — أدخل القراءة يدوياً",
-        );
+        return;
       }
+
+      // 2) لا تخمين: قراءة غير مؤكدة = رفض وطلب إعادة تصوير.
+      if (ai.readingValue == null || ai.ambiguous) {
+        toast.error("القراءة غير واضحة في الصورة — أعد التصوير مع تقريب الأرقام داخل الإطار");
+        return;
+      }
+
+      setOcrReading(ai.readingValue);
+      setCurrent(String(ai.readingValue));
+      toast.success(`تم استخراج القراءة: ${ai.readingValue} — راجعها ثم اضغط «اعتماد القراءة»`);
+    } catch (e) {
+      console.error("Meter vision error:", e);
+      toast.error("تعذّر تحليل صورة العداد — أعد المحاولة أو أعد التصوير");
+    } finally {
+      setOcrBusy(false);
     }
-    setOcrBusy(false);
   }
 
   function clearPhoto() {
@@ -403,7 +379,10 @@ function ReadingsPage() {
     setOcrSerial(undefined);
     setOcrReading(null);
     setOcrOthers([]);
+    setReadingApproved(false);
+    setCurrent("");
   }
+
 
 
   async function captureGeo() {
@@ -421,6 +400,7 @@ function ReadingsPage() {
     if (tenantId) void clearReadingDraft(tenantId);
     setCurrent(""); setPhotoBlob(null); setPhotoPreview(undefined);
     setOcrSerial(undefined); setOcrReading(null); setOcrOthers([]); setGeo(null);
+    setReadingApproved(false);
     setReadingDate(new Date().toISOString().slice(0, 10));
   }
 
@@ -428,7 +408,8 @@ function ReadingsPage() {
     if (!tenantId || !user) return toast.error("لا توجد جلسة نشطة");
     if (!selectedCustomer) return toast.error("اختر مشتركاً");
     if (!selectedMeter) return toast.error("لا يوجد عداد مرتبط بهذا المشترك");
-    if (current === "" || Number.isNaN(+current)) return toast.error("أدخل القراءة الحالية");
+    if (current === "" || Number.isNaN(+current)) return toast.error("صوّر العداد لاستخراج القراءة الحالية");
+    if (!readingApproved) return toast.error("اضغط «اعتماد القراءة» قبل الحفظ");
 
     if (ocrSerial &&
         ocrSerial.replace(/[-\s]/g, "").toUpperCase() !==
@@ -643,9 +624,40 @@ function ReadingsPage() {
               </div>
               <div>
                 <Label>القراءة الحالية</Label>
-                <Input type="number" value={current} onChange={(e) => setCurrent(e.target.value)} />
+                <Input
+                  type="number" value={current}
+                  onChange={(e) => { setCurrent(e.target.value); setReadingApproved(false); }}
+                  placeholder={ocrBusy ? "جاري استخراج القراءة من الصورة…" : "تُملأ تلقائياً بعد تصوير العداد"}
+                />
               </div>
             </div>
+
+            {/* الاستهلاك المحسوب تلقائياً من السابقة والحالية */}
+            {current !== "" && !Number.isNaN(+current) && (
+              <div className="rounded-lg border p-3 bg-muted/30 grid grid-cols-3 gap-3 text-xs">
+                <Info label="القراءة السابقة"><span className="font-mono">{prevReading}</span></Info>
+                <Info label="القراءة الحالية"><span className="font-mono">{+current}</span></Info>
+                <Info label="الاستهلاك">
+                  <span className={`font-mono ${consumption < 0 ? "text-destructive" : ""}`}>
+                    {consumption.toFixed(1)} م³
+                  </span>
+                </Info>
+              </div>
+            )}
+
+            {/* موافقة القارئ — لا حفظ قبل الاعتماد */}
+            {current !== "" && !Number.isNaN(+current) && !readingApproved && (
+              <div className="flex flex-wrap gap-2 items-center rounded-lg border border-emerald-500/40 bg-emerald-500/5 p-3">
+                <span className="text-xs">راجع القراءة المستخرجة ثم اعتمدها، أو أعد التصوير إذا كانت غير صحيحة.</span>
+                <Button size="sm" onClick={() => { setReadingApproved(true); toast.success("تم اعتماد القراءة — يمكنك الحفظ الآن"); }}>
+                  <Check className="w-3 h-3 ms-1" /> اعتماد القراءة
+                </Button>
+                <Button size="sm" variant="outline" onClick={() => { clearPhoto(); setCameraOpen(true); }}>
+                  <Camera className="w-3 h-3 ms-1" /> إعادة التصوير
+                </Button>
+              </div>
+            )}
+
 
             <div className="grid md:grid-cols-2 gap-3">
               <div>
@@ -661,7 +673,7 @@ function ReadingsPage() {
               </div>
             </div>
 
-            <Button onClick={saveReading} size="lg" disabled={saving || geoBusy} className="w-full md:w-auto">
+            <Button onClick={saveReading} size="lg" disabled={saving || geoBusy || ocrBusy || !readingApproved} className="w-full md:w-auto">
               {saving ? <><Loader2 className="w-4 h-4 ms-1 animate-spin" /> جاري الحفظ…</> : "حفظ القراءة"}
             </Button>
 

@@ -405,6 +405,17 @@ export const MeterCamera: React.FC<MeterCameraProps> = ({
             type="button"
             variant="outline"
             disabled={isCompressing}
+            onClick={() => nativeInputRef.current?.click()}
+            className="gap-2"
+          >
+            <Camera className="w-4 h-4" />
+            كاميرا النظام
+          </Button>
+
+          <Button
+            type="button"
+            variant="outline"
+            disabled={isCompressing}
             onClick={() => fileInputRef.current?.click()}
             className="gap-2"
           >
@@ -422,6 +433,15 @@ export const MeterCamera: React.FC<MeterCameraProps> = ({
         className="hidden"
         onChange={handleFileUpload}
       />
+      {/* كاميرا النظام — بديل مضمون داخل الـiframe أو عند رفض getUserMedia */}
+      <input
+        ref={nativeInputRef}
+        type="file"
+        accept="image/*"
+        capture="environment"
+        className="hidden"
+        onChange={handleFileUpload}
+      />
 
       {isCameraActive && (
         <div className="relative w-full max-w-md overflow-hidden rounded-lg bg-black aspect-video flex items-center justify-center">
@@ -433,12 +453,30 @@ export const MeterCamera: React.FC<MeterCameraProps> = ({
             muted
           />
 
+          {/* إطار توجيه القراءة: وجّه شبّاك الأرقام داخل المستطيل */}
+          {isStreamReady && (
+            <div className="pointer-events-none absolute inset-0">
+              <div className="absolute inset-0 bg-black/45 [clip-path:polygon(0_0,100%_0,100%_100%,0_100%,0_32%,12%_32%,12%_68%,88%_68%,88%_32%,0_32%)]" />
+              <div className="absolute left-[12%] right-[12%] top-[32%] h-[36%] rounded-md border-2 border-emerald-400/90 shadow-[0_0_0_1px_rgba(0,0,0,.35)]">
+                <span className="absolute -top-0.5 -left-0.5 w-5 h-5 border-t-4 border-l-4 border-emerald-300 rounded-tl-md" />
+                <span className="absolute -top-0.5 -right-0.5 w-5 h-5 border-t-4 border-r-4 border-emerald-300 rounded-tr-md" />
+                <span className="absolute -bottom-0.5 -left-0.5 w-5 h-5 border-b-4 border-l-4 border-emerald-300 rounded-bl-md" />
+                <span className="absolute -bottom-0.5 -right-0.5 w-5 h-5 border-b-4 border-r-4 border-emerald-300 rounded-br-md" />
+                <span className="absolute inset-x-0 top-1/2 h-px bg-emerald-300/50" />
+              </div>
+              <p className="absolute top-3 inset-x-0 text-center text-[11px] text-white/95 px-3">
+                ضع شبّاك أرقام العداد داخل الإطار · اقترب حتى تملأ الأرقام عرض الإطار · ثبّت الهاتف
+              </p>
+            </div>
+          )}
+
           {!isStreamReady && (
             <div className="absolute inset-0 flex items-center justify-center gap-2 text-sm text-white/90 bg-black/60">
               <Loader2 className="w-4 h-4 animate-spin" />
               جاري تشغيل الكاميرا…
             </div>
           )}
+
 
           <div className="absolute bottom-4 flex gap-4">
             <Button
