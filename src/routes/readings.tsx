@@ -77,6 +77,8 @@ function ReadingsPage() {
   const [ocrReading, setOcrReading] = useState<number | null>(null);
   const [ocrOthers, setOcrOthers] = useState<string[]>([]);
   const [ocrBusy, setOcrBusy] = useState(false);
+  /** لا تُحفظ القراءة قبل ضغط «اعتماد القراءة» من القارئ. */
+  const [readingApproved, setReadingApproved] = useState(false);
 
   const [geo, setGeo] = useState<GeoFix | null>(null);
   const [geoBusy, setGeoBusy] = useState(false);
