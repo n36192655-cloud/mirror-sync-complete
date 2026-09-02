@@ -3,6 +3,7 @@ import { toast } from "sonner";
 import { calcConsumption, type MeterType } from "./pricing";
 import { supabase } from "@/integrations/supabase/client";
 import { useTariff } from "./tariff";
+import { recordPayment as recordPaymentRpc, approvePayment as approvePaymentRpc, rejectPayment as rejectPaymentRpc } from "./financial-rpc";
 
 /**
  * خطأ انتهاء/غياب جلسة Supabase. الواجهة لا يجوز أن تعرض بيانات فارغة
@@ -42,7 +43,6 @@ async function fetchAll<T = Record<string, unknown>>(
       .order("id", { ascending: true })
       .range(from, from + PAGE - 1);
     if (error) {
-      // لا نُرجع [] بصمت: مصفوفة فارغة تُقرأ في الواجهة كـ«لا توجد بيانات».
       console.error(`[Mizan] fetchAll(${table}) failed:`, error.message);
       throw new DataLoadError(table, error.message);
     }
@@ -62,11 +62,7 @@ async function countRows(table: string): Promise<number> {
   return count ?? 0;
 }
 
-
-
-
 export type ApprovalStatus = "pending" | "approved" | "rejected";
-/** حالة القراءة كما تخزَّن في قاعدة البيانات (موحّدة بين الواجهة والخادم). */
 export type ReadingStatus = "pending_approval" | "approved" | "rejected";
 
 export interface Customer {
@@ -85,7 +81,6 @@ export interface Customer {
   geo_accuracy?: number;
   geo_captured_at?: string;
   family_members: number;
-  /** رصيد المشترك كما تحسبه قاعدة البيانات (مصدر الحقيقة الوحيد للمديونية). */
   balance?: number;
 }
 
@@ -125,17 +120,14 @@ export interface Bill {
   subtotal: number;
   arrears: number;
   total: number;
-  /** المبلغ المعتمد المسدَّد كما تسجّله قاعدة البيانات (water_bills.paid_amount). */
   paid?: number;
   status: "unpaid" | "paid" | "partial";
   date: string;
   photo?: string;
 }
 
-/** فئات طرق الدفع الموحّدة — تطابق ما يخزّنه الخادم في payments.method. */
 export type PaymentMethod = "cash" | "wallet" | "transfer";
 
-/** ترجمة قيمة قاعدة البيانات إلى فئة موحّدة. */
 export function normalizePaymentMethod(raw: string): PaymentMethod {
   const v = (raw ?? "").toLowerCase().trim();
   if (v === "cash" || v === "نقدي") return "cash";
@@ -144,7 +136,6 @@ export function normalizePaymentMethod(raw: string): PaymentMethod {
   return "cash";
 }
 
-/** عرض اسم طريقة الدفع بالعربية للواجهة. */
 export function paymentMethodLabel(m: PaymentMethod | string): string {
   const n = normalizePaymentMethod(m);
   if (n === "cash") return "نقدي";
@@ -191,11 +182,6 @@ const DIRECTORATES = [
 ];
 export const TAIZ_DIRECTORATES = DIRECTORATES;
 
-/**
- * المتبقي على الفاتورة = نفس معادلة الخادم في `record_payment`:
- *   total - (المدفوع المعتمد) - (المدفوع قيد الاعتماد)
- * المدفوع المعتمد تؤخذ قيمته المباشرة من `water_bills.paid_amount` عند توفرها.
- */
 export function billBalance(bill: Bill, payments: Payment[]): number {
   if (!bill) return 0;
   const approved = bill.paid !== undefined
@@ -211,18 +197,10 @@ export function billBalance(bill: Bill, payments: Payment[]): number {
   return Math.max(0, Number(bill.total || 0) - approved - pending);
 }
 
-/* =========================================================================
- * تعريفات موحّدة لمؤشرات الاستدامة (مصدر واحد للحقيقة في الواجهة).
- * كل صفحة تعرض NRW أو الاستهلاك أو المؤشرات المالية يجب أن تستدعي هذه الدوال
- * بدل إعادة كتابة المعادلة محلياً — وإلا اختلفت النتائج بين الصفحات.
- * ========================================================================= */
-
-/** الاستهلاك الرسمي يُحتسب فقط من القراءات المعتمدة (approved). */
 export function isOfficialReading(r: Reading): boolean {
   return r.status === "approved";
 }
 
-/** استهلاك رسمي غير سالب لقراءة واحدة. */
 export function readingVolume(r: Reading): number {
   return Math.max(0, Number(r.consumption) || 0);
 }
@@ -247,7 +225,6 @@ function inRange(dateISO: string, range?: DateRange): boolean {
   return true;
 }
 
-/** إجمالي الاستهلاك الرسمي (القراءات المعتمدة فقط) ضمن فترة اختيارية. */
 export function officialConsumption(readings: Reading[], range?: DateRange): number {
   return readings.reduce(
     (a, r) => (isOfficialReading(r) && inRange(r.date, range) ? a + readingVolume(r) : a),
@@ -263,12 +240,6 @@ export interface NrwResult {
   efficiencyPct: number;
 }
 
-/**
- * التعريف الرسمي الوحيد للفاقد (Non-Revenue Water):
- *   الفاقد   = max(0, المُنتج − الاستهلاك الرسمي المعتمد)
- *   النسبة % = (الفاقد ÷ المُنتج) × 100   (صفر إذا لم يوجد إنتاج)
- *   الكفاءة  = 100 − النسبة
- */
 export function computeNrw(
   productionLogs: ProductionLog[],
   readings: Reading[],
@@ -293,13 +264,6 @@ export interface FinancialSummary {
   unpaidBills: number;
 }
 
-/**
- * المؤشرات المالية الموحّدة:
- *   إجمالي الفواتير = Σ bills.total
- *   المحصّل         = Σ bills.paid_amount (المعتمد في قاعدة البيانات) — بلا ازدواج مع payments
- *   المتأخرات       = Σ billBalance(فاتورة غير مسددة) = total − معتمد − قيد الاعتماد
- *   كفاءة التحصيل   = (المحصّل ÷ إجمالي الفواتير) × 100
- */
 export function computeFinancials(bills: Bill[], payments: Payment[]): FinancialSummary {
   const totalBilled = bills.reduce((a, b) => a + (Number(b.total) || 0), 0);
   const totalCollected = bills.reduce((a, b) => {
@@ -323,7 +287,6 @@ export function computeFinancials(bills: Bill[], payments: Payment[]): Financial
   };
 }
 
-// Stable UUID -> numeric hash so UI keeps numeric IDs while DB uses UUIDs.
 function hashId(uuid: string): number {
   let h = 0;
   for (let i = 0; i < uuid.length; i++) h = ((h << 5) - h + uuid.charCodeAt(i)) | 0;
@@ -379,9 +342,9 @@ type State = {
   unassignMeter: (customerId: number, reason?: string) => Promise<void>;
   approveReading: (id: number) => void;
   rejectReading: (id: number, reason?: string) => void;
-  addPayment: (input: { billId: number; amount: number; method: PaymentMethod | string; by?: string }) => Payment;
-  approvePayment: (id: number) => void;
-  rejectPayment: (id: number) => void;
+  addPayment: (input: { billId: number; amount: number; method: PaymentMethod | string; by?: string }) => Promise<Payment>;
+  approvePayment: (id: number) => Promise<void>;
+  rejectPayment: (id: number) => Promise<void>;
   addProductionLog: (p: Omit<ProductionLog, "id">) => void;
   deleteProductionLog: (id: number) => void;
   computeArrears: (customerId: number, excludeBillId?: number) => number;
@@ -402,8 +365,6 @@ function initial() {
   };
 }
 
-// لا يوجد persist للبيانات التشغيلية: مصدر الحقيقة الوحيد هو قاعدة البيانات،
-// وأي لقطة محلية قديمة كانت تُظهر بيانات Seed بدل الفواتير الحديثة.
 if (typeof window !== "undefined") {
   try { window.localStorage.removeItem("mizan-utility-v2"); } catch { /* ignore */ }
 }
@@ -412,10 +373,7 @@ export const useStore = create<State>()(
     ((set, get) => ({
       ...initial(),
 
-
       hydrateFromSupabase: async () => {
-        // جلسة Supabase حقيقية شرط لأي قراءة: بدونها كل الطلبات تُنفَّذ كـ anon
-        // فتُرفض بـ permission denied وتظهر الواجهة صفرية بلا سبب واضح.
         const { data: sessionData } = await supabase.auth.getSession();
         if (!sessionData?.session?.access_token) throw new SessionMissingError();
         const { data: userData, error: userErr } = await supabase.auth.getUser();
@@ -435,15 +393,10 @@ export const useStore = create<State>()(
             countRows("water_readings"),
             countRows("water_bills"),
             countRows("payments"),
-          ]).then(([customers, readings, bills, payments]) => ({
-            customers, readings, bills, payments,
-          })),
+          ]).then(([customers, readings, bills, payments]) => ({ customers, readings, bills, payments })),
         ]);
         /* eslint-enable @typescript-eslint/no-explicit-any */
 
-        /* Supabase is not generated with table row types in this legacy store;
-         * the dynamic PostgREST rows are contained at this adapter boundary.
-         * Keep the explicit any scope narrow instead of weakening lint globally. */
         /* eslint-disable @typescript-eslint/no-explicit-any */
         idMap.customer.clear();
         idMap.meter.clear();
@@ -460,11 +413,7 @@ export const useStore = create<State>()(
             directorate: c.directorate ?? undefined,
             address: c.address ?? undefined,
             pay_account: c.pay_account ?? payAccountFor(nid),
-            status: (c.status === "active"
-              ? "active"
-              : c.status === "suspended"
-                ? "suspended"
-                : "pending") as Customer["status"],
+            status: (c.status === "active" ? "active" : c.status === "suspended" ? "suspended" : "pending") as Customer["status"],
             latitude: c.latitude ?? undefined, longitude: c.longitude ?? undefined,
             geo_accuracy: c.geo_accuracy ?? undefined,
             geo_captured_at: c.geo_captured_at ?? undefined,
@@ -473,8 +422,6 @@ export const useStore = create<State>()(
           };
         });
 
-        // العدادات كيان مستقل مرتبط بالمشترك عبر meter_assignments النشطة.
-        const serialByMeterUuid = new Map<string, string>((ms ?? []).map((m: any) => [m.id, m.serial as string]));
         const activeAssignments = (mas ?? []).filter((a: any) => !a.ended_at);
         const meterUuidByCustomerUuid = new Map<string, string>();
         const customerUuidByMeterUuid = new Map<string, string>();
@@ -498,12 +445,10 @@ export const useStore = create<State>()(
         });
 
         const customerNumericByUuid = new Map<string, number>((cs ?? []).map((c: any) => [c.id, hashId(c.id)]));
-
         const readingMeter = new Map<string, number>();
         const readings: Reading[] = (rs ?? []).map((r) => {
           const nid = hashId(r.id);
           idMap.reading.set(nid, r.id);
-          const custNum = customerNumericByUuid.get(r.customer_id ?? "") ?? 0;
           const meterUuid = (r as any).meter_id ?? meterUuidByCustomerUuid.get(r.customer_id ?? "") ?? null;
           const mid = meterUuid ? hashId(meterUuid) : 0;
           if (meterUuid) idMap.meter.set(mid, meterUuid);
@@ -537,10 +482,7 @@ export const useStore = create<State>()(
           const nid = hashId(p.id);
           idMap.payment.set(nid, p.id);
           const raw = (p.status as string | undefined) ?? "approved";
-          const status: ApprovalStatus =
-            raw === "approved" || raw === "pending" || raw === "rejected"
-              ? (raw as ApprovalStatus)
-              : "approved";
+          const status: ApprovalStatus = raw === "approved" || raw === "pending" || raw === "rejected" ? raw : "approved";
           return {
             id: nid, bill_id: p.bill_id ? hashId(p.bill_id) : 0,
             amount: Number(p.amount), method: normalizePaymentMethod(p.method), date: p.created_at,
@@ -555,21 +497,9 @@ export const useStore = create<State>()(
         });
 
         saveIdMap();
-        const byNewest = <T extends { date: string }>(arr: T[]) =>
-          [...arr].sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0));
+        const byNewest = <T extends { date: string }>(arr: T[]) => [...arr].sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0));
 
-        set({
-          customers,
-          meters,
-          readings: byNewest(readings),
-          bills: byNewest(bills),
-          payments: byNewest(payments),
-          productionLogs,
-          counts,
-          hydrated: true,
-          seeded: false,
-        });
-
+        set({ customers, meters, readings: byNewest(readings), bills: byNewest(bills), payments: byNewest(payments), productionLogs, counts, hydrated: true, seeded: false });
         void useTariff.getState().load();
         /* eslint-enable @typescript-eslint/no-explicit-any */
       },
@@ -579,82 +509,50 @@ export const useStore = create<State>()(
         const cid = Math.max(0, ...s.customers.map((x) => x.id)) + 1;
         const familyMembers = Math.max(1, Number(data.familyMembers ?? 5) || 5);
         const geoAt = data.latitude != null ? new Date().toISOString() : undefined;
-
         const { data: tenantRow, error: tenantError } = await supabase.rpc("current_tenant_id");
-        if (tenantError || !tenantRow) {
-          throw new Error("تعذّر تحديد المؤسسة الحالية — تأكد من تسجيل الدخول بصلاحية مدير");
-        }
+        if (tenantError || !tenantRow) throw new Error("تعذّر تحديد المؤسسة الحالية — تأكد من تسجيل الدخول بصلاحية مدير");
 
         const payload = {
           tenant_id: tenantRow as unknown as string,
-          name: data.name,
-          phone: data.phone,
-          directorate: data.directorate,
-          address: data.address,
-          status: "active",
-          latitude: data.latitude ?? null,
-          longitude: data.longitude ?? null,
-          geo_accuracy: data.geoAccuracy ?? null,
-          geo_captured_at: geoAt ?? null,
-          family_members: familyMembers,
+          name: data.name, phone: data.phone, directorate: data.directorate, address: data.address,
+          status: "active", latitude: data.latitude ?? null, longitude: data.longitude ?? null,
+          geo_accuracy: data.geoAccuracy ?? null, geo_captured_at: geoAt ?? null, family_members: familyMembers,
         };
 
         const taken = new Set(s.customers.map((c) => c.pay_account));
         let payAccount = payAccountFor(cid);
         while (taken.has(payAccount)) payAccount = payAccountFor(Math.floor(Math.random() * 900000) + 100000);
-        /* The Supabase client is untyped for this legacy table access; keep the
-         * response value inside this single persistence adapter boundary. */
         /* eslint-disable @typescript-eslint/no-explicit-any */
         let inserted: any = null;
         for (let attempt = 0; attempt < 5; attempt++) {
-          const res = await supabase
-            .from("customers")
-            .insert({ ...payload, pay_account: payAccount })
-            .select("*").single();
+          const res = await supabase.from("customers").insert({ ...payload, pay_account: payAccount }).select("*").single();
           if (!res.error && res.data) { inserted = res.data; break; }
-          const conflict =
-            res.error?.code === "23505" || /duplicate|conflict/i.test(res.error?.message ?? "");
-          if (conflict && attempt < 4) {
-            payAccount = payAccountFor(Math.floor(Math.random() * 900000) + 100000);
-            continue;
-          }
+          const conflict = res.error?.code === "23505" || /duplicate|conflict/i.test(res.error?.message ?? "");
+          if (conflict && attempt < 4) { payAccount = payAccountFor(Math.floor(Math.random() * 900000) + 100000); continue; }
           throw new Error(res.error?.message ?? "تعذّر حفظ المشترك في قاعدة البيانات");
         }
         if (!inserted) throw new Error("تعذّر حفظ المشترك في قاعدة البيانات");
-
         const nid = hashId(inserted.id);
         idMap.customer.set(nid, inserted.id);
         saveIdMap();
         /* eslint-enable @typescript-eslint/no-explicit-any */
 
         const { error: meterError2 } = await supabase.rpc("assign_meter", {
-          _customer_id: inserted.id,
-          _serial: data.meterNumber,
-          _meter_type: data.meterType ?? "water",
+          _customer_id: inserted.id, _serial: data.meterNumber, _meter_type: data.meterType ?? "water",
         });
         if (meterError2) throw new Error(meterError(meterError2.message));
-
         await get().hydrateFromSupabase();
-
         const after = get();
-        const customer =
-          after.customers.find((c) => c.id === nid) ?? {
-            id: nid, name: data.name, phone: data.phone, city: "تعز",
-            directorate: data.directorate, address: data.address,
-            pay_account: payAccount, status: "active" as const,
-            family_members: familyMembers,
-          };
-        return customer;
+        return after.customers.find((c) => c.id === nid) ?? {
+          id: nid, name: data.name, phone: data.phone, city: "تعز", directorate: data.directorate,
+          address: data.address, pay_account: payAccount, status: "active" as const, family_members: familyMembers,
+        };
       },
 
       assignMeter: async (customerId, meterNumber, meterType = "water") => {
         const uuid = idMap.customer.get(customerId);
         if (!uuid) throw new Error("المشترك غير معروف");
-        const { data, error } = await supabase.rpc("assign_meter", {
-          _customer_id: uuid,
-          _serial: meterNumber,
-          _meter_type: meterType,
-        });
+        const { error } = await supabase.rpc("assign_meter", { _customer_id: uuid, _serial: meterNumber, _meter_type: meterType });
         if (error) throw new Error(meterError(error.message));
         await get().hydrateFromSupabase();
         const meter = get().meters.find((m) => m.customer_id === customerId && m.number === meterNumber);
@@ -665,36 +563,49 @@ export const useStore = create<State>()(
       unassignMeter: async (customerId, reason) => {
         const uuid = idMap.customer.get(customerId);
         if (!uuid) throw new Error("المشترك غير معروف");
-        const { error } = await supabase.rpc("unassign_meter", {
-          _customer_id: uuid,
-          _reason: reason ?? "إلغاء الربط",
-        });
+        const { error } = await supabase.rpc("unassign_meter", { _customer_id: uuid, _reason: reason ?? "إلغاء الربط" });
         if (error) throw new Error(error.message);
         await get().hydrateFromSupabase();
       },
 
-      approveReading: (id) => {
-        toast.info("اعتماد القراءة يتم من الخادم بعد التحقق من البيانات");
-      },
-      rejectReading: (id, reason) => {
-        toast.info(`رفض القراءة يتم من الخادم${reason ? `: ${reason}` : ""}`);
+      approveReading: (id) => { toast.info("اعتماد القراءة يتم من الخادم بعد التحقق من البيانات"); },
+      rejectReading: (id, reason) => { toast.info(`رفض القراءة يتم من الخادم${reason ? `: ${reason}` : ""}`); },
+
+      addPayment: async (input) => {
+        const billUuid = idMap.bill.get(input.billId);
+        if (!billUuid) throw new Error("الفاتورة غير معروفة");
+        const paymentUuid = await recordPaymentRpc({
+          billId: billUuid,
+          amount: input.amount,
+          method: normalizePaymentMethod(input.method),
+          clientUuid: crypto.randomUUID(),
+        });
+        await get().hydrateFromSupabase();
+        const payment = get().payments.find((p) => p.id === hashId(paymentUuid));
+        if (!payment) throw new Error("تم تسجيل الدفعة لكن تعذر تحديث الواجهة");
+        return payment;
       },
 
-      addPayment: (input) => {
-        const id = Math.max(0, ...get().payments.map((x) => x.id)) + 1;
-        const p: Payment = { id, bill_id: input.billId, amount: input.amount, method: normalizePaymentMethod(input.method), date: new Date().toISOString(), status: "pending", by: input.by };
-        set((s) => ({ payments: [p, ...s.payments] }));
-        return p;
+      approvePayment: async (id) => {
+        const paymentUuid = idMap.payment.get(id);
+        if (!paymentUuid) throw new Error("الدفعة غير معروفة");
+        await approvePaymentRpc(paymentUuid);
+        await get().hydrateFromSupabase();
       },
-      approvePayment: (id) => set((s) => ({ payments: s.payments.map((p) => p.id === id ? { ...p, status: "approved" } : p) })),
-      rejectPayment: (id) => set((s) => ({ payments: s.payments.map((p) => p.id === id ? { ...p, status: "rejected" } : p) })),
+
+      rejectPayment: async (id) => {
+        const paymentUuid = idMap.payment.get(id);
+        if (!paymentUuid) throw new Error("الدفعة غير معروفة");
+        await rejectPaymentRpc(paymentUuid);
+        await get().hydrateFromSupabase();
+      },
+
       addProductionLog: (p) => {
         const id = Math.max(0, ...get().productionLogs.map((x) => x.id)) + 1;
         set((s) => ({ productionLogs: [{ ...p, id }, ...s.productionLogs] }));
       },
       deleteProductionLog: (id) => set((s) => ({ productionLogs: s.productionLogs.filter((p) => p.id !== id) })),
-      computeArrears: (customerId, excludeBillId) =>
-        get().bills.filter((b) => b.customer_id === customerId && b.id !== excludeBillId && b.status !== "paid").reduce((sum, b) => sum + billBalance(b, get().payments), 0),
+      computeArrears: (customerId, excludeBillId) => get().bills.filter((b) => b.customer_id === customerId && b.id !== excludeBillId && b.status !== "paid").reduce((sum, b) => sum + billBalance(b, get().payments), 0),
       reset: () => set(initial()),
     })),
 );
