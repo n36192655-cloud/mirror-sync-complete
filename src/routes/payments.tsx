@@ -1,12 +1,15 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useState, useMemo } from "react";
 import { useStore, paymentMethodLabel } from "@/lib/store";
+import { approvePayment, rejectPayment } from "@/lib/financial-rpc";
+import { mappedUuid } from "@/lib/id-map";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { fmtYER } from "@/lib/pricing";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Wallet, Check, X, CircleDollarSign, Smartphone } from "lucide-react";
+import { toast } from "sonner";
 
 import { useAuth } from "@/lib/auth";
 
@@ -16,10 +19,11 @@ export const Route = createFileRoute("/payments")({
 });
 
 function PaymentsPage() {
-  const { payments, bills, customers, approvePayment, rejectPayment } = useStore();
+  const { payments, bills, customers, hydrateFromSupabase } = useStore();
   const { user } = useAuth();
   const isAdmin = user?.role === "manager" || user?.role === "super_admin";
   const [tab, setTab] = useState<"pending" | "approved" | "rejected">("pending");
+  const [busyId, setBusyId] = useState<number | null>(null);
 
   const list = useMemo(
     () => [...payments].filter((p) => p.status === tab).sort((a, b) => +new Date(b.date) - +new Date(a.date)),
@@ -33,6 +37,32 @@ function PaymentsPage() {
     const pending = payments.filter((p) => p.status === "pending").reduce((a, b) => a + b.amount, 0);
     return { cash, wallet, total: cash + wallet, pending };
   }, [payments, approved]);
+
+  async function handleApprove(id: number) {
+    setBusyId(id);
+    try {
+      await approvePayment(mappedUuid("payment", id));
+      await hydrateFromSupabase();
+      toast.success("تم اعتماد الدفعة وتحديث رصيد الفاتورة");
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "تعذّر اعتماد الدفعة");
+    } finally {
+      setBusyId(null);
+    }
+  }
+
+  async function handleReject(id: number) {
+    setBusyId(id);
+    try {
+      await rejectPayment(mappedUuid("payment", id));
+      await hydrateFromSupabase();
+      toast.success("تم رفض الدفعة");
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "تعذّر رفض الدفعة");
+    } finally {
+      setBusyId(null);
+    }
+  }
 
   return (
     <div className="space-y-6">
@@ -79,6 +109,7 @@ function PaymentsPage() {
                 {list.map((p) => {
                   const b = bills.find((x) => x.id === p.bill_id);
                   const c = customers.find((x) => x.id === b?.customer_id);
+                  const busy = busyId === p.id;
                   return (
                     <TableRow key={p.id}>
                       <TableCell className="text-muted-foreground">#{p.id}</TableCell>
@@ -94,10 +125,10 @@ function PaymentsPage() {
                         <TableCell>
                           {isAdmin ? (
                             <div className="flex gap-1">
-                              <Button size="sm" onClick={() => approvePayment(p.id)}>
-                                <Check className="w-3 h-3 ms-1" /> اعتماد
+                              <Button size="sm" onClick={() => void handleApprove(p.id)} disabled={busy}>
+                                <Check className="w-3 h-3 ms-1" /> {busy ? "جارٍ…" : "اعتماد"}
                               </Button>
-                              <Button size="sm" variant="destructive" onClick={() => rejectPayment(p.id)}>
+                              <Button size="sm" variant="destructive" onClick={() => void handleReject(p.id)} disabled={busy}>
                                 <X className="w-3 h-3 ms-1" /> رفض
                               </Button>
                             </div>
