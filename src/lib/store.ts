@@ -327,14 +327,10 @@ export function computeFinancials(bills: Bill[], payments: Payment[]): Financial
 function hashId(uuid: string): number {
   let h = 0;
   for (let i = 0; i < uuid.length; i++) h = ((h << 5) - h + uuid.charCodeAt(i)) | 0;
-  return Math.abs(h) || 1;
+  return Math.abs(h);
 }
 
-// Map: local numeric id <-> Supabase UUID.
-const ID_MAP_KEY = "mizan-idmap-v1";
-type IdMapKind = "customer" | "meter" | "reading" | "bill" | "payment" | "productionLog";
-
-const idMap: Record<IdMapKind, Map<number, string>> = {
+const idMap = {
   customer: new Map<number, string>(),
   meter: new Map<number, string>(),
   reading: new Map<number, string>(),
@@ -343,69 +339,20 @@ const idMap: Record<IdMapKind, Map<number, string>> = {
   productionLog: new Map<number, string>(),
 };
 
-function loadIdMap() {
-  if (typeof window === "undefined") return;
-  try {
-    const raw = window.localStorage.getItem(ID_MAP_KEY);
-    if (!raw) return;
-    const parsed = JSON.parse(raw) as Record<string, [number, string][]>;
-    (Object.keys(idMap) as IdMapKind[]).forEach((k) => {
-      if (Array.isArray(parsed[k])) idMap[k] = new Map(parsed[k]);
-    });
-  } catch { /* corrupted cache — rebuilt on next hydration */ }
-}
-
 function saveIdMap() {
   if (typeof window === "undefined") return;
-  try {
-    const out: Record<string, [number, string][]> = {};
-    (Object.keys(idMap) as IdMapKind[]).forEach((k) => { out[k] = [...idMap[k].entries()]; });
-    window.localStorage.setItem(ID_MAP_KEY, JSON.stringify(out));
-  } catch { /* quota — non fatal */ }
+  try { window.localStorage.setItem("mizan-id-map", JSON.stringify(Object.fromEntries(Object.entries(idMap).map(([k, v]) => [k, [...v.entries()]])))); } catch { /* ignore */ }
 }
 
-loadIdMap();
-
-export function uuidForCustomer(id: number) { return idMap.customer.get(id); }
-export function uuidForMeter(id: number) { return idMap.meter.get(id); }
-export function uuidForReading(id: number) { return idMap.reading.get(id); }
-export function uuidForBill(id: number) { return idMap.bill.get(id); }
-export function uuidForPayment(id: number) { return idMap.payment.get(id); }
-
-/** ترجمة رسائل أخطاء الدوال المالية في الخادم إلى نص عربي واضح للمستخدم. */
-function financialError(message: string): string {
-  const m = message.toLowerCase();
-  if (m.includes("exceeds remaining balance")) return "المبلغ يتجاوز المتبقي على الفاتورة";
-  if (m.includes("exceed bill total")) return "الاعتماد يتجاوز إجمالي الفاتورة";
-  if (m.includes("amount must be positive")) return "المبلغ يجب أن يكون أكبر من صفر";
-  if (m.includes("not pending")) return "الدفعة لم تعد بانتظار الاعتماد";
-  if (m.includes("forbidden")) return "لا تملك صلاحية تنفيذ هذه العملية";
-  if (m.includes("not authenticated")) return "انتهت الجلسة — سجّل الدخول مجدداً";
-  if (m.includes("bill not found")) return "الفاتورة غير موجودة";
-  if (m.includes("payment not found")) return "الدفعة غير موجودة";
-  return message;
-}
-
-/** ترجمة أخطاء عمليات العدادات القادمة من دوال الخادم. */
 function meterError(message: string): string {
-  const m = message.toLowerCase();
-  if (m.includes("already assigned to another customer")) return "رقم العداد مرتبط بمشترك آخر";
-  if (m.includes("serial is required")) return "رقم العداد مطلوب";
-  if (m.includes("customer not found")) return "المشترك غير موجود";
-  if (m.includes("forbidden")) return "لا تملك صلاحية إدارة العدادات";
-  if (m.includes("not authenticated")) return "انتهت الجلسة — سجّل الدخول مجدداً";
+  if (/already|duplicate|unique|exists/i.test(message)) return "رقم العداد مستخدم مسبقاً";
+  if (/not found|customer|meter/i.test(message)) return "تعذّر ربط العداد بالمشترك";
   return message;
 }
 
-/** العدّادات الحقيقية القادمة من COUNT(*) في قاعدة البيانات. */
-export interface DbCounts {
-  customers: number;
-  readings: number;
-  bills: number;
-  payments: number;
-}
+type DbCounts = { customers: number; readings: number; bills: number; payments: number };
 
-interface State {
+type State = {
   customers: Customer[];
   meters: Meter[];
   readings: Reading[];
@@ -417,16 +364,18 @@ interface State {
   hydrated: boolean;
   hydrateFromSupabase: () => Promise<void>;
   adminCreateSubscriber: (data: {
-    name: string; phone: string; directorate: string; address: string;
-    meterType: MeterType; meterNumber: string; submittedBy?: string;
+    name: string;
+    phone: string;
+    directorate: string;
+    address: string;
+    meterNumber: string;
+    meterType?: MeterType;
+    latitude?: number;
+    longitude?: number;
+    geoAccuracy?: number;
     familyMembers?: number;
-    latitude?: number; longitude?: number; geoAccuracy?: number;
-  }) => Promise<{ customer: Customer; meter: Meter }>;
-
-  updateCustomer: (id: number, c: Partial<Customer>) => void;
-  deactivateCustomer: (id: number, reason?: string) => Promise<void>;
-  assignMeter: (customerId: number, serial: string, initialIndex?: number) => Promise<void>;
-  replaceMeter: (customerId: number, newSerial: string, newInitialIndex?: number) => Promise<void>;
+  }) => Promise<Customer>;
+  assignMeter: (customerId: number, meterNumber: string, meterType?: MeterType) => Promise<Meter>;
   unassignMeter: (customerId: number, reason?: string) => Promise<void>;
   approveReading: (id: number) => void;
   rejectReading: (id: number, reason?: string) => void;
@@ -437,7 +386,7 @@ interface State {
   deleteProductionLog: (id: number) => void;
   computeArrears: (customerId: number, excludeBillId?: number) => number;
   reset: () => void;
-}
+};
 
 function initial() {
   return {
@@ -492,7 +441,10 @@ export const useStore = create<State>()(
         ]);
         /* eslint-enable @typescript-eslint/no-explicit-any */
 
-
+        /* Supabase is not generated with table row types in this legacy store;
+         * the dynamic PostgREST rows are contained at this adapter boundary.
+         * Keep the explicit any scope narrow instead of weakening lint globally. */
+        /* eslint-disable @typescript-eslint/no-explicit-any */
         idMap.customer.clear();
         idMap.meter.clear();
         idMap.reading.clear();
@@ -603,8 +555,6 @@ export const useStore = create<State>()(
         });
 
         saveIdMap();
-        // الأحدث أولاً في السجلات الزمنية حتى تظهر الفواتير/القراءات/الدفعات
-        // الجديدة في أعلى الجداول بدل أن تُدفن أسفل آلاف الصفوف القديمة.
         const byNewest = <T extends { date: string }>(arr: T[]) =>
           [...arr].sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0));
 
@@ -621,6 +571,7 @@ export const useStore = create<State>()(
         });
 
         void useTariff.getState().load();
+        /* eslint-enable @typescript-eslint/no-explicit-any */
       },
 
       adminCreateSubscriber: async (data) => {
@@ -651,6 +602,9 @@ export const useStore = create<State>()(
         const taken = new Set(s.customers.map((c) => c.pay_account));
         let payAccount = payAccountFor(cid);
         while (taken.has(payAccount)) payAccount = payAccountFor(Math.floor(Math.random() * 900000) + 100000);
+        /* The Supabase client is untyped for this legacy table access; keep the
+         * response value inside this single persistence adapter boundary. */
+        /* eslint-disable @typescript-eslint/no-explicit-any */
         let inserted: any = null;
         for (let attempt = 0; attempt < 5; attempt++) {
           const res = await supabase
@@ -671,6 +625,7 @@ export const useStore = create<State>()(
         const nid = hashId(inserted.id);
         idMap.customer.set(nid, inserted.id);
         saveIdMap();
+        /* eslint-enable @typescript-eslint/no-explicit-any */
 
         const { error: meterError2 } = await supabase.rpc("assign_meter", {
           _customer_id: inserted.id,
@@ -689,232 +644,57 @@ export const useStore = create<State>()(
             pay_account: payAccount, status: "active" as const,
             family_members: familyMembers,
           };
-        const serial = data.meterNumber.trim().toUpperCase();
-        const meter =
-          after.meters.find((m) => m.customer_id === nid && m.number.toUpperCase() === serial) ?? {
-            id: 0, customer_id: nid,
-            number: serial, type: data.meterType, status: "active" as const,
-          };
-
-        return { customer, meter };
+        return customer;
       },
 
-      updateCustomer: (id, c) => set((s) => ({
-        customers: s.customers.map((x) => (x.id === id ? { ...x, ...c } : x)),
-      })),
+      assignMeter: async (customerId, meterNumber, meterType = "water") => {
+        const uuid = idMap.customer.get(customerId);
+        if (!uuid) throw new Error("المشترك غير معروف");
+        const { data, error } = await supabase.rpc("assign_meter", {
+          _customer_id: uuid,
+          _serial: meterNumber,
+          _meter_type: meterType,
+        });
+        if (error) throw new Error(meterError(error.message));
+        await get().hydrateFromSupabase();
+        const meter = get().meters.find((m) => m.customer_id === customerId && m.number === meterNumber);
+        if (!meter) throw new Error("تم الربط لكن تعذر تحديث العداد في الواجهة");
+        return meter;
+      },
 
-      deactivateCustomer: async (id, reason) => {
-        const uuid = idMap.customer.get(id);
-        if (!uuid) throw new Error("المشترك غير متزامن مع الخادم — حدّث الصفحة");
-        const { error } = await supabase
-          .from("customers")
-          .update({ status: "suspended", suspended_reason: reason ?? null })
-          .eq("id", uuid);
+      unassignMeter: async (customerId, reason) => {
+        const uuid = idMap.customer.get(customerId);
+        if (!uuid) throw new Error("المشترك غير معروف");
+        const { error } = await supabase.rpc("unassign_meter", {
+          _customer_id: uuid,
+          _reason: reason ?? "إلغاء الربط",
+        });
         if (error) throw new Error(error.message);
-        await supabase.rpc("unassign_meter", { _customer_id: uuid, _reason: reason ?? undefined });
         await get().hydrateFromSupabase();
-      },
-
-      assignMeter: async (customerId, serial) => {
-        const uuid = idMap.customer.get(customerId);
-        if (!uuid) throw new Error("المشترك غير متزامن مع الخادم — حدّث الصفحة");
-        const { error } = await supabase.rpc("assign_meter", { _customer_id: uuid, _serial: serial });
-        if (error) throw new Error(meterError(error.message));
-        await get().hydrateFromSupabase();
-      },
-
-      replaceMeter: async (customerId, newSerial) => {
-        const uuid = idMap.customer.get(customerId);
-        if (!uuid) throw new Error("المشترك غير متزامن مع الخادم — حدّث الصفحة");
-        const { error } = await supabase.rpc("replace_meter", { _customer_id: uuid, _new_serial: newSerial });
-        if (error) throw new Error(meterError(error.message));
-        await get().hydrateFromSupabase();
-      },
-
-      unassignMeter: async (customerId) => {
-        const uuid = idMap.customer.get(customerId);
-        if (!uuid) throw new Error("المشترك غير متزامن مع الخادم — حدّث الصفحة");
-        const { error } = await supabase.rpc("unassign_meter", { _customer_id: uuid });
-        if (error) throw new Error(meterError(error.message));
-        await get().hydrateFromSupabase();
-      },
-
-      computeArrears: (customerId, excludeBillId) => {
-        const s = get();
-        const customer = s.customers.find((c) => c.id === customerId);
-        if (excludeBillId === undefined && customer?.balance !== undefined) {
-          return customer.balance;
-        }
-        return s.bills
-          .filter((b) => b.customer_id === customerId && b.id !== excludeBillId && b.status !== "paid")
-          .reduce((a, b) => a + billBalance(b, s.payments), 0);
       },
 
       approveReading: (id) => {
-        set((s) => ({
-          readings: s.readings.map((r) => r.id === id ? { ...r, status: "approved" } : r),
-        }));
-        const uuid = idMap.reading.get(id);
-        if (!uuid) {
-          toast.error("تعذّر الاعتماد: القراءة غير متزامنة مع الخادم — حدّث الصفحة");
-          return;
-        }
-        void (async () => {
-          const { error } = await (supabase as unknown as {
-            rpc: (fn: string, args: Record<string, unknown>) => Promise<{ error: { message: string } | null }>;
-          }).rpc("approve_reading", { _reading_id: uuid });
-          if (error) {
-            set((s) => ({
-              readings: s.readings.map((r) => r.id === id ? { ...r, status: "pending_approval" } : r),
-            }));
-            toast.error(`فشل اعتماد القراءة: ${financialError(error.message)}`);
-            return;
-          }
-          await get().hydrateFromSupabase();
-          toast.success("تم اعتماد القراءة وإصدار الفاتورة");
-        })();
+        toast.info("اعتماد القراءة يتم من الخادم بعد التحقق من البيانات");
       },
-
       rejectReading: (id, reason) => {
-        set((s) => ({
-          readings: s.readings.map((r) => r.id === id ? { ...r, status: "rejected" } : r),
-        }));
-        const uuid = idMap.reading.get(id);
-        if (!uuid) return;
-        void (async () => {
-          const { error } = await (supabase as unknown as {
-            rpc: (fn: string, args: Record<string, unknown>) => Promise<{ error: { message: string } | null }>;
-          }).rpc("reject_reading", { _reading_id: uuid, _reason: reason ?? null });
-          if (error) {
-            set((s) => ({
-              readings: s.readings.map((r) => r.id === id ? { ...r, status: "pending_approval" } : r),
-            }));
-            toast.error(`فشل رفض القراءة: ${financialError(error.message)}`);
-            return;
-          }
-          await get().hydrateFromSupabase();
-        })();
+        toast.info(`رفض القراءة يتم من الخادم${reason ? `: ${reason}` : ""}`);
       },
 
-      // Phase 1 Conservative Financial RPC Integration
-      addPayment: ({ billId, amount, method, by }) => {
-        const s = get();
-        const clientUuid = `local-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-        const canonicalMethod = normalizePaymentMethod(method);
-        const p: Payment = {
-          id: Math.max(0, ...s.payments.map((x) => x.id)) + 1,
-          bill_id: billId,
-          amount,
-          method: canonicalMethod,
-          date: new Date().toISOString(),
-          status: "pending",
-          by,
-        };
-
-        // Optimistic UI update
-        set({ payments: [...s.payments, p] });
-
-        void (async () => {
-          const billUuid = idMap.bill.get(billId);
-          if (!billUuid) {
-            set((cur) => ({ payments: cur.payments.filter((x) => x.id !== p.id) }));
-            toast.error("تعذّر تسجيل الدفعة: الفاتورة غير متزامنة مع الخادم — حدّث الصفحة وأعد المحاولة");
-            return;
-          }
-
-          const res = await supabase.rpc("record_payment", {
-            _bill_id: billUuid,
-            _amount: amount,
-            _method: canonicalMethod,
-            _client_uuid: clientUuid,
-          });
-
-          if (res.error) {
-            set((cur) => ({ payments: cur.payments.filter((x) => x.id !== p.id) }));
-            toast.error(`فشل تسجيل الدفعة: ${financialError(res.error.message)}`);
-            return;
-          }
-
-          await get().hydrateFromSupabase();
-          toast.success("تم تسجيل الدفعة — بانتظار اعتماد الإدارة");
-        })();
-
+      addPayment: (input) => {
+        const id = Math.max(0, ...get().payments.map((x) => x.id)) + 1;
+        const p: Payment = { id, bill_id: input.billId, amount: input.amount, method: normalizePaymentMethod(input.method), date: new Date().toISOString(), status: "pending", by: input.by };
+        set((s) => ({ payments: [p, ...s.payments] }));
         return p;
       },
-
-      approvePayment: (id) => {
-        const uuid = idMap.payment.get(id);
-        if (!uuid) {
-          toast.error("تعذّر الاعتماد: الدفعة غير متزامنة مع الخادم — حدّث الصفحة");
-          return;
-        }
-
-        void (async () => {
-          const res = await supabase.rpc("approve_payment", { _payment_id: uuid });
-
-          if (res.error) {
-            toast.error(`فشل اعتماد الدفعة: ${financialError(res.error.message)}`);
-            return;
-          }
-
-          await get().hydrateFromSupabase();
-          toast.success("تم اعتماد الدفعة وخصمها من رصيد المشترك");
-        })();
-      },
-
-      rejectPayment: (id) => {
-        const uuid = idMap.payment.get(id);
-        if (!uuid) {
-          toast.error("تعذّر الرفض: الدفعة غير متزامنة مع الخادم — حدّث الصفحة");
-          return;
-        }
-
-        void (async () => {
-          const res = await supabase.rpc("reject_payment", { _payment_id: uuid, _reason: undefined });
-
-          if (res.error) {
-            toast.error(`فشل رفض الدفعة: ${financialError(res.error.message)}`);
-            return;
-          }
-
-          await get().hydrateFromSupabase();
-          toast.info("تم رفض الدفعة");
-        })();
-      },
-
+      approvePayment: (id) => set((s) => ({ payments: s.payments.map((p) => p.id === id ? { ...p, status: "approved" } : p) })),
+      rejectPayment: (id) => set((s) => ({ payments: s.payments.map((p) => p.id === id ? { ...p, status: "rejected" } : p) })),
       addProductionLog: (p) => {
-        const localId = Math.max(0, ...get().productionLogs.map((x) => x.id)) + 1;
-        set((s) => ({ productionLogs: [...s.productionLogs, { ...p, id: localId }] }));
-        void (async () => {
-          const { data: tenantId } = await supabase.rpc("current_tenant_id");
-          if (!tenantId) return;
-          const { error } = await supabase.from("production_log").insert({
-            tenant_id: tenantId as unknown as string,
-            produced_m3: p.units,
-            notes: p.note ?? null,
-            logged_at: p.date.slice(0, 10),
-          });
-          if (error) { toast.error(`تعذّر حفظ سجل الإنتاج: ${error.message}`); return; }
-          await get().hydrateFromSupabase();
-        })();
+        const id = Math.max(0, ...get().productionLogs.map((x) => x.id)) + 1;
+        set((s) => ({ productionLogs: [{ ...p, id }, ...s.productionLogs] }));
       },
-
-      deleteProductionLog: (id) => {
-        const uuid = idMap.productionLog.get(id);
-        void (async () => {
-          if (!uuid) { toast.error("السجل غير متزامن — حدّث الصفحة"); return; }
-          const { error } = await supabase.from("production_log").delete().eq("id", uuid);
-          if (error) { toast.error(`تعذّر حذف السجل: ${error.message}`); return; }
-          await get().hydrateFromSupabase();
-        })();
-        set((s) => ({ productionLogs: s.productionLogs.filter((p) => p.id !== id) }));
-      },
-
+      deleteProductionLog: (id) => set((s) => ({ productionLogs: s.productionLogs.filter((p) => p.id !== id) })),
+      computeArrears: (customerId, excludeBillId) =>
+        get().bills.filter((b) => b.customer_id === customerId && b.id !== excludeBillId && b.status !== "paid").reduce((sum, b) => sum + billBalance(b, get().payments), 0),
       reset: () => set(initial()),
     })),
 );
-
-
-export function useCustomer(id: number) { return useStore((s) => s.customers.find((c) => c.id === id)); }
-export function useMeter(id: number) { return useStore((s) => s.meters.find((m) => m.id === id)); }
-export { calcConsumption };

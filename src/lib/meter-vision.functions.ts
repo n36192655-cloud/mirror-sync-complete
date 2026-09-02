@@ -1,22 +1,12 @@
 import { createServerFn } from "@tanstack/react-start";
 import { requireSupabaseAuth } from "@/integrations/supabase/auth-middleware";
 
-/**
- * قراءة عداد المياه من الصورة باستخدام نموذج رؤية (AI OCR).
- * لا يحفظ شيئاً ولا يغيّر أي منطق حسابي — يعيد اقتراحاً فقط ليؤكده المستخدم.
- */
 export interface MeterVisionResult {
-  /** القراءة الحالية المستخرجة من خانات العداد */
   readingValue: number | null;
-  /** ثقة النموذج 0-100 */
   confidence: number;
-  /** رقم العداد كما ظهر على جسم العداد (تحقق فقط) */
   meterNumber: string | null;
-  /** أرقام أخرى ظهرت في الصورة (للعرض فقط) */
   otherNumbers: string[];
-  /** لا يمكن الحسم — يُطلب إدخال يدوي */
   ambiguous: boolean;
-  /** مطابقة رقم العداد الظاهر في الصورة مع عداد المشترك المحدد */
   serialMatch: "match" | "mismatch" | "unknown";
 }
 
@@ -28,17 +18,48 @@ interface VisionInput {
 
 function validate(input: unknown): VisionInput {
   const obj = (input ?? {}) as Record<string, unknown>;
-  const imageDataUrl = typeof obj["imageDataUrl"] === "string" ? obj["imageDataUrl"] : "";
+  const imageDataUrl = typeof obj.imageDataUrl === "string" ? obj.imageDataUrl : "";
   if (!/^data:image\/(png|jpe?g|webp);base64,[A-Za-z0-9+/=]+$/.test(imageDataUrl)) {
     throw new Error("صورة غير صالحة");
   }
-  // حد أقصى ~6MB بعد base64
   if (imageDataUrl.length > 8_000_000) throw new Error("حجم الصورة كبير جداً");
   const knownMeterNumber =
-    typeof obj["knownMeterNumber"] === "string" ? obj["knownMeterNumber"].slice(0, 40) : undefined;
-  const prev = obj["previousReading"];
-  const previousReading = typeof prev === "number" && Number.isFinite(prev) ? prev : null;
+    typeof obj.knownMeterNumber === "string"
+      ? obj.knownMeterNumber.trim().slice(0, 40)
+      : undefined;
+  const previousReading =
+    typeof obj.previousReading === "number" && Number.isFinite(obj.previousReading)
+      ? obj.previousReading
+      : null;
   return { imageDataUrl, knownMeterNumber, previousReading };
+}
+
+function canonicalMeterNumber(value: string): string {
+  return value
+    .normalize("NFKC")
+    .trim()
+    .toUpperCase()
+    .replace(/[\u2010-\u2015\u2212]/g, "-")
+    .replace(/[\s_-]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+}
+
+function exactSerialMatch(
+  knownMeterNumber: string | undefined,
+  candidates: Array<string | null | undefined>,
+): "match" | "mismatch" | "unknown" {
+  const known = canonicalMeterNumber(knownMeterNumber ?? "");
+  if (!known) return "unknown";
+  const values = candidates
+    .filter(
+      (value): value is string =>
+        typeof value === "string" && value.trim().length > 0,
+    )
+    .map(canonicalMeterNumber)
+    .filter(Boolean);
+  // Fail closed: with a linked meter, unreadable identity is not acceptable for a reading.
+  if (values.length === 0) return "mismatch";
+  return values.includes(known) ? "match" : "mismatch";
 }
 
 export const readMeterFromImage = createServerFn({ method: "POST" })
@@ -46,84 +67,76 @@ export const readMeterFromImage = createServerFn({ method: "POST" })
   .inputValidator(validate)
   .handler(async ({ data }): Promise<MeterVisionResult> => {
     const apiKey = process.env["GEMINI_API_KEY"];
-    if (!apiKey) throw new Error("خدمة الذكاء الاصطناعي غير مهيأة (GEMINI_API_KEY مفقود).");
+    if (!apiKey) {
+      throw new Error("خدمة الذكاء الاصطناعي غير مهيأة (GEMINI_API_KEY مفقود).");
+    }
 
     const hints = [
-      data.knownMeterNumber ? `رقم العداد المعروف مسبقاً: ${data.knownMeterNumber}` : null,
-      data.previousReading != null ? `القراءة السابقة المسجلة: ${data.previousReading}` : null,
+      data.knownMeterNumber ? `رقم العداد المتوقع: ${data.knownMeterNumber}` : null,
+      data.previousReading != null ? `القراءة السابقة: ${data.previousReading}` : null,
     ]
       .filter(Boolean)
       .join("\n");
+    const system = `أنت نظام رؤية متخصص في عدادات المياه.
 
-    const system = `أنت خبير متخصص في قراءة عدادات المياه من الصور (ميكانيكية بأسطوانات أرقام، أو شاشات رقمية LCD).
+المطلوب مهمتان مستقلتان:
+1) التعرف على الرقم التسلسلي للعداد نفسه للتحقق من الهوية.
+2) قراءة خانات الاستهلاك داخل نافذة القراءة فقط.
 
-خطوات إلزامية قبل الإجابة:
-1) حدّد مكان «شبّاك القراءة» (صف الخانات المتجاورة داخل إطار مستطيل في منتصف وجه العداد). هذا هو المصدر الوحيد للقراءة.
-2) اقرأ الخانات من اليسار إلى اليمين خانةً خانة، ولا تُسقط الأصفار في البداية.
-3) الخانات ذات الخلفية/الإطار الأحمر (أو المفصولة بفاصلة عشرية) هي كسور — استبعدها تماماً وأعد الجزء الصحيح فقط (عادة 4 إلى 8 خانات).
-4) إذا كانت أسطوانة بين رقمين (نصف دوران)، خذ الرقم الأدنى الظاهر بالكامل.
+قواعد رقم العداد:
+- اقرأ الرقم التسلسلي كما هو مطبوع على جسم العداد أو الملصق المرتبط به.
+- لا تعتبر رقم القراءة أو السنة أو التاريخ أو DN/Q3/R160 أو أي رقم تقني رقماً للعداد.
+- لا تخمّن أي خانة.
+- إذا لم يكن الرقم التسلسلي واضحاً بالكامل، meterNumber يجب أن يكون نصاً فارغاً.
+- لا تضف أو تحذف أصفاراً ولا تصحح حرفاً مشكوكاً فيه من نفسك.
 
-ما يجب تجاهله تماماً (لا يدخل في readingValue إطلاقاً):
-- رقم العداد التسلسلي المطبوع على الجسم أو على ملصق/باركود (غالباً بخط أصغر وخارج شبّاك القراءة).
-- سنة الصنع والتواريخ، أرقام المعايرة، القطر (Q3, R160, DN15, 15mm)، الضغط، الوحدات (m3, m³, L)، أرقام الهاتف، اسم الشركة والموديل، أرقام الأختام والرموز الفنية.
-
-قواعد الحسم:
-- إن كانت هناك «قراءة سابقة» معطاة: القراءة الحالية يجب أن تكون أكبر منها أو مساوية لها وبفارق منطقي. إن خالفت نتيجتك ذلك فأعد فحص الخانات قبل الإجابة.
-- لا تخمّن أبداً: إن كان شبّاك القراءة غير واضح أو ضبابي أو محجوب أو تحتمل خانة أكثر من رقم، اضبط ambiguous=true و readingValue=null.
-- confidence رقم من 0 إلى 100 يعبّر عن وضوح الخانات فعلياً.
-- readingDigits هو نص الخانات الصحيحة كما قرأتها بالضبط (مثال "00123").
-- meterNumber: اقرأ الرقم التسلسلي المطبوع على جسم العداد أو الملصق/الباركود كما هو بالضبط (حروف وأرقام)، وإن لم يظهر بوضوح أعده null.
-- otherNumbers: بقية الأرقام الظاهرة في الصورة (ملصقات، باركود، تواريخ) كنص.
-- أعد JSON فقط بلا أي شرح.`;
+قواعد القراءة:
+- مصدر القراءة الوحيد هو نافذة خانات الاستهلاك.
+- تجاهل الرقم التسلسلي وكل الأرقام خارج نافذة القراءة.
+- اقرأ الخانات من اليسار إلى اليمين، مع الحفاظ على الأصفار في البداية.
+- استبعد الخانات الكسرية الحمراء/العشرية إذا كانت ظاهرة، حسب إعداد العداد المعتاد.
+- إذا كانت خانة ميكانيكية بين رقمين ولا يمكن حسمها، اعتبر النتيجة ambiguous.
+- إذا كانت الصورة ضبابية أو مظلمة أو فيها انعكاس/حجب يمنع قراءة خانة، لا تخمّن.
+- readingDigits يجب أن يكون النص الدقيق للخانات الصحيحة فقط، أو فارغاً عند عدم القدرة على الحسم.
+- confidence بين 0 و100 ويعبّر عن وضوح القراءة فعلياً، وليس عن احتمال التخمين.
+- أعد JSON فقط.`;
 
     const schema = {
       type: "object",
       additionalProperties: false,
       properties: {
-        readingDigits: { type: "string", description: "خانات القراءة الصحيحة، أو نص فارغ إذا تعذّر" },
+        readingDigits: { type: "string" },
         confidence: { type: "number" },
-        meterNumber: { type: "string", description: "الرقم التسلسلي، أو نص فارغ" },
+        meterNumber: { type: "string" },
         otherNumbers: { type: "array", items: { type: "string" } },
         ambiguous: { type: "boolean" },
       },
-      required: ["readingDigits", "confidence", "meterNumber", "otherNumbers", "ambiguous"],
+      required: [
+        "readingDigits",
+        "confidence",
+        "meterNumber",
+        "otherNumbers",
+        "ambiguous",
+      ],
     };
 
     interface Pass {
       readingValue: number | null;
+      readingDigits: string;
       confidence: number;
       meterNumber: string | null;
       otherNumbers: string[];
       ambiguous: boolean;
-    }
-
-    /** مقارنة رقم العداد الظاهر بالصورة مع رقم عداد المشترك. */
-    function compareSerial(seen: string | null, others: string[]): "match" | "mismatch" | "unknown" {
-      const known = (data.knownMeterNumber ?? "").trim();
-      if (!known) return "unknown";
-      const clean = (v: string) => v.toUpperCase().replace(/[^A-Z0-9]/g, "");
-      const digits = (v: string) => v.replace(/\D/g, "").replace(/^0+/, "");
-      const k = clean(known);
-      const kd = digits(known);
-      if (!k) return "unknown";
-      const pool = [seen, ...others].filter((v): v is string => typeof v === "string" && v.trim() !== "");
-      if (pool.length === 0) return "unknown";
-      for (const raw of pool) {
-        const c = clean(raw);
-        const d = digits(raw);
-        if (!c) continue;
-        if (c === k || c.includes(k) || k.includes(c)) return "match";
-        if (kd && d && kd.length >= 3 && (d === kd || d.endsWith(kd) || kd.endsWith(d))) return "match";
-      }
-      // ظهر رقم عداد في الصورة لكنه لا يطابق
-      return seen && clean(seen) ? "mismatch" : "unknown";
+      serialMatch: "match" | "mismatch" | "unknown";
     }
 
     async function runPass(): Promise<Pass> {
       const { geminiChat, GeminiError } = await import("./gemini.server");
-      let json: { choices?: Array<{ message?: { content?: string } }> };
+      let response: {
+        choices?: Array<{ message?: { content?: string } }>;
+      };
       try {
-        json = (await geminiChat(apiKey as string, {
+        response = (await geminiChat(apiKey, {
           messages: [
             { role: "system", content: system },
             {
@@ -131,9 +144,12 @@ export const readMeterFromImage = createServerFn({ method: "POST" })
               content: [
                 {
                   type: "text",
-                  text: `اقرأ «القراءة الحالية» من شبّاك القراءة في صورة عداد المياه هذه، وتجاهل كل رقم آخر في الصورة.\n${hints}`,
+                  text: `حلّل صورة عداد المياه. تحقق من هوية العداد أولاً، ثم اقرأ خانات الاستهلاك فقط.\n${hints}`,
                 },
-                { type: "image_url", image_url: { url: data.imageDataUrl } },
+                {
+                  type: "image_url",
+                  image_url: { url: data.imageDataUrl },
+                },
               ],
             },
           ],
@@ -141,117 +157,141 @@ export const readMeterFromImage = createServerFn({ method: "POST" })
             type: "json_schema",
             json_schema: { name: "meter_reading", schema },
           },
-        })) as typeof json;
-      } catch (err) {
-        const status = err instanceof GeminiError ? err.status : 0;
-        if (status === 429) throw new Error("الخدمة مزدحمة حالياً — أعد المحاولة بعد قليل");
+        })) as typeof response;
+      } catch (error) {
+        const status = error instanceof GeminiError ? error.status : 0;
+        if (status === 429) {
+          throw new Error("الخدمة مزدحمة حالياً — أعد المحاولة بعد قليل");
+        }
         if (status === 402) throw new Error("رصيد الذكاء الاصطناعي غير كافٍ");
         throw new Error(`تعذر تحليل الصورة (${status})`);
       }
 
-      const content = json.choices?.[0]?.message?.content ?? "";
+      const content = response.choices?.[0]?.message?.content ?? "";
       let parsed: Record<string, unknown> = {};
       try {
         parsed = JSON.parse(content) as Record<string, unknown>;
       } catch {
-        const m = content.match(/\{[\s\S]*\}/);
-        if (m) {
+        const match = content.match(/\{[\s\S]*\}/);
+        if (match) {
           try {
-            parsed = JSON.parse(m[0]) as Record<string, unknown>;
+            parsed = JSON.parse(match[0]) as Record<string, unknown>;
           } catch {
             parsed = {};
           }
         }
       }
 
-
-      const rawReading = parsed["readingValue"];
-      let readingValue =
-        typeof rawReading === "number" && Number.isFinite(rawReading) && rawReading >= 0
-          ? rawReading
+      const readingDigits =
+        typeof parsed.readingDigits === "string" ? parsed.readingDigits.trim() : "";
+      const digitOnly = readingDigits.replace(/[^0-9]/g, "");
+      const compactDigits = readingDigits.replace(/\s/g, "");
+      const readingValue =
+        digitOnly.length >= 1 &&
+        digitOnly.length <= 12 &&
+        digitOnly.length === compactDigits.length
+          ? Number(digitOnly)
           : null;
-      if (readingValue == null && typeof parsed["readingDigits"] === "string") {
-        const d = (parsed["readingDigits"] as string).replace(/[^\d]/g, "");
-        if (d.length >= 3 && d.length <= 8) readingValue = Number(d);
-      }
-      const rawConf = parsed["confidence"];
+      const rawConfidence = parsed.confidence;
       const confidence =
-        typeof rawConf === "number" && Number.isFinite(rawConf)
-          ? Math.max(0, Math.min(100, Math.round(rawConf <= 1 ? rawConf * 100 : rawConf)))
+        typeof rawConfidence === "number" && Number.isFinite(rawConfidence)
+          ? Math.max(
+              0,
+              Math.min(100, Math.round(rawConfidence <= 1 ? rawConfidence * 100 : rawConfidence)),
+            )
           : 0;
-
+      const meterNumber =
+        typeof parsed.meterNumber === "string" && parsed.meterNumber.trim()
+          ? parsed.meterNumber.trim()
+          : null;
+      const otherNumbers = Array.isArray(parsed.otherNumbers)
+        ? parsed.otherNumbers.map(String).filter(Boolean).slice(0, 12)
+        : [];
+      const serialMatch = exactSerialMatch(data.knownMeterNumber, [
+        meterNumber,
+        ...otherNumbers,
+      ]);
       return {
         readingValue,
+        readingDigits,
         confidence,
-        meterNumber: typeof parsed["meterNumber"] === "string" ? parsed["meterNumber"] : null,
-        otherNumbers: Array.isArray(parsed["otherNumbers"])
-          ? parsed["otherNumbers"].map((v) => String(v)).slice(0, 8)
-          : [],
-        ambiguous: parsed["ambiguous"] === true,
+        meterNumber,
+        otherNumbers,
+        ambiguous: parsed.ambiguous === true || readingValue == null,
+        serialMatch,
       };
     }
 
-    // الممر الأول: نموذج سريع.
+    if (!canonicalMeterNumber(data.knownMeterNumber ?? "")) {
+      return {
+        readingValue: null,
+        confidence: 0,
+        meterNumber: null,
+        otherNumbers: [],
+        ambiguous: true,
+        serialMatch: "unknown",
+      };
+    }
+
     const first = await runPass();
-
-    const knownDigits = (data.knownMeterNumber ?? "").replace(/\D/g, "").replace(/^0+/, "");
-    const looksLikeSerial =
-      knownDigits.length >= 4 &&
-      first.readingValue != null &&
-      String(Math.trunc(first.readingValue)) === knownDigits;
-
-    const belowPrevious =
+    const firstBelowPrevious =
       data.previousReading != null &&
       first.readingValue != null &&
       first.readingValue < data.previousReading;
+    const firstAcceptable =
+      first.serialMatch === "match" &&
+      first.readingValue != null &&
+      !first.ambiguous &&
+      first.confidence >= 85 &&
+      !firstBelowPrevious;
 
-    const needsVerify =
-      first.readingValue == null ||
-      first.ambiguous ||
-      first.confidence < 85 ||
-      looksLikeSerial ||
-      belowPrevious;
-
-    if (!needsVerify) return { ...first, serialMatch: compareSerial(first.meterNumber, first.otherNumbers) };
-
-    // ممر تحقق بنموذج أقوى — يُستدعى فقط عند الشك.
-    let second: Pass | null = null;
-    try {
-      second = await runPass();
-    } catch {
-      second = null;
-    }
-
-    if (!second) {
-      const m = compareSerial(first.meterNumber, first.otherNumbers);
-      return looksLikeSerial || belowPrevious
-        ? { ...first, readingValue: null, ambiguous: true, serialMatch: m }
-        : { ...first, serialMatch: m };
-    }
-
-    const secondBelow =
-      data.previousReading != null &&
-      second.readingValue != null &&
-      second.readingValue < data.previousReading;
-    const secondSerial =
-      knownDigits.length >= 4 &&
-      second.readingValue != null &&
-      String(Math.trunc(second.readingValue)) === knownDigits;
-
-    if (second.readingValue == null || second.ambiguous || secondBelow || secondSerial) {
+    if (!firstAcceptable) {
+      let second: Pass;
+      try {
+        second = await runPass();
+      } catch {
+        return {
+          ...first,
+          readingValue: null,
+          ambiguous: true,
+          serialMatch: first.serialMatch,
+        };
+      }
+      const secondBelowPrevious =
+        data.previousReading != null &&
+        second.readingValue != null &&
+        second.readingValue < data.previousReading;
+      const sameSerial =
+        first.serialMatch === "match" && second.serialMatch === "match";
+      const sameReading =
+        first.readingValue != null &&
+        second.readingValue != null &&
+        first.readingValue === second.readingValue;
+      if (
+        !sameSerial ||
+        !sameReading ||
+        second.readingValue == null ||
+        second.ambiguous ||
+        second.confidence < 85 ||
+        secondBelowPrevious
+      ) {
+        const serialMatch =
+          first.serialMatch === "mismatch" || second.serialMatch === "mismatch"
+            ? "mismatch"
+            : "unknown";
+        return {
+          ...second,
+          readingValue: null,
+          ambiguous: true,
+          serialMatch,
+        };
+      }
       return {
         ...second,
-        readingValue: null,
-        ambiguous: true,
-        serialMatch: compareSerial(second.meterNumber, second.otherNumbers),
+        confidence: Math.min(100, Math.max(first.confidence, second.confidence, 95)),
+        ambiguous: false,
+        serialMatch: "match",
       };
     }
-
-    const agree = first.readingValue === second.readingValue;
-    return {
-      ...second,
-      confidence: agree ? Math.max(second.confidence, 95) : Math.min(second.confidence, 80),
-      ambiguous: false,
-      serialMatch: compareSerial(second.meterNumber, second.otherNumbers),
-    };
+    return first;
   });
