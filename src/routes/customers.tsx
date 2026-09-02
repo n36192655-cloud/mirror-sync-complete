@@ -1,8 +1,9 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useState } from "react";
 import { useStore, TAIZ_DIRECTORATES } from "@/lib/store";
-import type { MeterType } from "@/lib/pricing";
+import { assignMeter, replaceMeter } from "@/lib/meter-management";
 import { getGeoFix } from "@/lib/geolocation";
+import type { MeterType } from "@/lib/pricing";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -34,7 +35,7 @@ interface Form {
 const EMPTY: Form = { name: "", phone: "", directorate: TAIZ_DIRECTORATES[0], address: "", meterType: "water", meterNumber: "", familyMembers: 5 };
 
 function CustomersPage() {
-  const { customers, meters, adminCreateSubscriber, deactivateCustomer } = useStore();
+  const { customers, meters, adminCreateSubscriber, deactivateCustomer, hydrateFromSupabase } = useStore();
   const [q, setQ] = useState("");
   const [open, setOpen] = useState(false);
   const [form, setForm] = useState<Form>(EMPTY);
@@ -55,18 +56,29 @@ function CustomersPage() {
 
   async function runMeterOp(op: "assign" | "replace" | "unassign") {
     if (meterFor == null) return;
-    const store = useStore.getState();
     setMeterBusy(true);
     try {
       if (op === "unassign") {
-        await store.unassignMeter(meterFor);
+        await useStore.getState().unassignMeter(meterFor, "إلغاء الربط");
+        await hydrateFromSupabase();
         toast.success("تم فك ارتباط العداد — التاريخ محفوظ");
       } else {
         const serial = meterSerial.trim();
-        if (!serial) return toast.error("رقم العداد مطلوب");
-        const idx = Number(meterIndex) || 0;
-        if (op === "assign") await store.assignMeter(meterFor, serial, idx);
-        else await store.replaceMeter(meterFor, serial, idx);
+        if (!serial) {
+          toast.error("رقم العداد مطلوب");
+          return;
+        }
+        const parsedIndex = Number(meterIndex);
+        if (!Number.isFinite(parsedIndex) || parsedIndex < 0) {
+          toast.error("القراءة الابتدائية غير صحيحة");
+          return;
+        }
+        if (op === "assign") {
+          await assignMeter({ customerId: meterFor, serial, meterType: "water", initialIndex: parsedIndex });
+        } else {
+          await replaceMeter({ customerId: meterFor, serial, initialIndex: parsedIndex });
+        }
+        await hydrateFromSupabase();
         toast.success(op === "assign" ? "تم ربط العداد" : "تم استبدال العداد — القراءات القديمة بقيت على العداد السابق");
       }
       setMeterFor(null);
@@ -138,7 +150,6 @@ function CustomersPage() {
       setSaving(false);
     }
   }
-
 
   return (
     <div className="space-y-6">
@@ -241,7 +252,6 @@ function CustomersPage() {
                   <TableHead className="text-right">العنوان</TableHead>
                   <TableHead className="text-right">أفراد الأسرة</TableHead>
                   <TableHead className="text-right">العدادات</TableHead>
-
                   <TableHead className="text-right">حساب السداد</TableHead>
                   <TableHead className="text-right">الحالة</TableHead>
                   <TableHead className="text-right"></TableHead>
@@ -258,7 +268,6 @@ function CustomersPage() {
                       <TableCell>{c.directorate ?? "—"}</TableCell>
                       <TableCell className="text-xs text-muted-foreground max-w-[220px] truncate">{c.address ?? "—"}</TableCell>
                       <TableCell>{c.family_members ?? "—"}</TableCell>
-
                       <TableCell>
                         <div className="flex gap-1 flex-wrap">
                           {cMeters.map((m) => (
