@@ -66,7 +66,13 @@ export async function addPending(p: Omit<PendingReading,"clientId"|"createdAt"|"
   validatePhoto(photo);
   const item: PendingReading = { ...p, clientId, createdAt: new Date().toISOString(), status: "pending", attempts: 0, hasPhoto: true, photoType: photo.type };
   await idbPut(STORE_BLOBS, photo, clientId);
-  await idbPut(STORE_QUEUE, item); notify(); return item;
+  try {
+    await idbPut(STORE_QUEUE, item);
+  } catch (error) {
+    await idbDelete(STORE_BLOBS, clientId).catch(() => undefined);
+    throw error;
+  }
+  notify(); return item;
 }
 export async function removePending(clientId: string) { await idbDelete(STORE_QUEUE, clientId); await idbDelete(STORE_BLOBS, clientId); notify(); }
 export async function retryPending(clientId: string) { const item = await idbGet<PendingReading>(STORE_QUEUE, clientId); if (!item || item.status === "synced") return; await idbPut(STORE_QUEUE,{...item,status:"pending",lastError:undefined,lastAttemptAt:undefined}); notify(); await syncPending(true); }
