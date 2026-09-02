@@ -1,6 +1,5 @@
 import { createServerFn } from "@tanstack/react-start";
 import { requireSupabaseAuth } from "@/integrations/supabase/auth-middleware";
-import { assertMeterImageQuality } from "./meter-image-quality";
 
 export interface MeterVisionResult {
   readingValue: number | null;
@@ -20,9 +19,7 @@ interface VisionInput {
 function validate(input: unknown): VisionInput {
   const obj = (input ?? {}) as Record<string, unknown>;
   const imageDataUrl = typeof obj.imageDataUrl === "string" ? obj.imageDataUrl : "";
-  if (!/^data:image\/(png|jpe?g|webp);base64,[A-Za-z0-9+/=]+$/.test(imageDataUrl)) {
-    throw new Error("صورة غير صالحة");
-  }
+  if (!/^data:image\/(png|jpe?g|webp);base64,[A-Za-z0-9+/=]+$/.test(imageDataUrl)) throw new Error("صورة غير صالحة");
   if (imageDataUrl.length > 8_000_000) throw new Error("حجم الصورة كبير جداً");
   const knownMeterNumber = typeof obj.knownMeterNumber === "string" ? obj.knownMeterNumber.trim().slice(0, 40) : undefined;
   const previousReading = typeof obj.previousReading === "number" && Number.isFinite(obj.previousReading) ? obj.previousReading : null;
@@ -45,21 +42,10 @@ export const readMeterFromImage = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
   .inputValidator(validate)
   .handler(async ({ data }): Promise<MeterVisionResult> => {
-    if (!canonicalMeterNumber(data.knownMeterNumber ?? "")) {
-      return { readingValue: null, confidence: 0, meterNumber: null, otherNumbers: [], ambiguous: true, serialMatch: "unknown" };
-    }
-
-    // Quality gate is applied to the derived analysis image only; the original Blob remains untouched for storage/proof.
-    await assertMeterImageQuality(data.imageDataUrl);
-
     const apiKey = process.env["GEMINI_API_KEY"];
     if (!apiKey) throw new Error("خدمة الذكاء الاصطناعي غير مهيأة (GEMINI_API_KEY مفقود).");
 
-    const hints = [
-      data.knownMeterNumber ? `رقم العداد المتوقع: ${data.knownMeterNumber}` : null,
-      data.previousReading != null ? `القراءة السابقة: ${data.previousReading}` : null,
-    ].filter(Boolean).join("\n");
-
+    const hints = [data.knownMeterNumber ? `رقم العداد المتوقع: ${data.knownMeterNumber}` : null, data.previousReading != null ? `القراءة السابقة: ${data.previousReading}` : null].filter(Boolean).join("\n");
     const system = `أنت نظام رؤية متخصص في قراءة عدادات المياه من الصور الواقعية.
 
 نفّذ مهمتين مستقلتين لكن مترابطتين:
@@ -93,63 +79,25 @@ export const readMeterFromImage = createServerFn({ method: "POST" })
 - لا تجعل القراءة أقل من القراءة السابقة عند وجود قراءة سابقة؛ إذا كانت أقل فاعتبرها غير مقبولة.
 - أعد JSON فقط.`;
 
-    const schema = {
-      type: "object",
-      additionalProperties: false,
-      properties: {
-        readingDigits: { type: "string" },
-        confidence: { type: "number" },
-        meterNumber: { type: "string" },
-        otherNumbers: { type: "array", items: { type: "string" } },
-        ambiguous: { type: "boolean" },
-      },
-      required: ["readingDigits", "confidence", "meterNumber", "otherNumbers", "ambiguous"],
-    };
+    const schema = { type: "object", additionalProperties: false, properties: { readingDigits: { type: "string" }, confidence: { type: "number" }, meterNumber: { type: "string" }, otherNumbers: { type: "array", items: { type: "string" } }, ambiguous: { type: "boolean" } }, required: ["readingDigits", "confidence", "meterNumber", "otherNumbers", "ambiguous"] };
 
-    interface Pass {
-      readingValue: number | null;
-      readingDigits: string;
-      confidence: number;
-      meterNumber: string | null;
-      otherNumbers: string[];
-      ambiguous: boolean;
-      serialMatch: "match" | "mismatch" | "unknown";
-    }
-
+    interface Pass { readingValue: number | null; readingDigits: string; confidence: number; meterNumber: string | null; otherNumbers: string[]; ambiguous: boolean; serialMatch: "match" | "mismatch" | "unknown"; }
     async function runPass(): Promise<Pass> {
       const { geminiChat, GeminiError } = await import("./gemini.server");
       let response: { choices?: Array<{ message?: { content?: string } }> };
       try {
-        response = (await geminiChat(apiKey, {
-          messages: [
-            { role: "system", content: system },
-            { role: "user", content: [
-              { type: "text", text: `حلّل صورة عداد المياه. أثبت هوية العداد أولاً ثم استخرج قراءة الاستهلاك فقط.\n${hints}` },
-              { type: "image_url", image_url: { url: data.imageDataUrl } },
-            ] },
-          ],
-          response_format: { type: "json_schema", json_schema: { name: "meter_reading", schema } },
-        })) as typeof response;
+        response = (await geminiChat(apiKey, { messages: [{ role: "system", content: system }, { role: "user", content: [{ type: "text", text: `حلّل صورة عداد المياه. أثبت هوية العداد أولاً ثم استخرج قراءة الاستهلاك فقط.\n${hints}` }, { type: "image_url", image_url: { url: data.imageDataUrl } }] }], response_format: { type: "json_schema", json_schema: { name: "meter_reading", schema } } })) as typeof response;
       } catch (error) {
         const status = error instanceof GeminiError ? error.status : 0;
         if (status === 429) throw new Error("الخدمة مزدحمة حالياً — أعد المحاولة بعد قليل");
         if (status === 402) throw new Error("رصيد الذكاء الاصطناعي غير كافٍ");
         throw new Error(`تعذر تحليل الصورة (${status})`);
       }
-
       const content = response.choices?.[0]?.message?.content ?? "";
       let parsed: Record<string, unknown> = {};
-      try { parsed = JSON.parse(content) as Record<string, unknown>; }
-      catch {
-        const match = content.match(/\{[\s\S]*\}/);
-        if (match) { try { parsed = JSON.parse(match[0]) as Record<string, unknown>; } catch { parsed = {}; } }
-      }
-
+      try { parsed = JSON.parse(content) as Record<string, unknown>; } catch { const match = content.match(/\{[\s\S]*\}/); if (match) { try { parsed = JSON.parse(match[0]) as Record<string, unknown>; } catch { parsed = {}; } } }
       const readingDigits = typeof parsed.readingDigits === "string" ? parsed.readingDigits.trim() : "";
-      const normalizedReading = readingDigits.replace(/[٠-٩۰-۹]/g, (d) => {
-        const code = d.charCodeAt(0);
-        return code >= 0x0660 && code <= 0x0669 ? String(code - 0x0660) : String(code - 0x06f0);
-      });
+      const normalizedReading = readingDigits.replace(/[٠-٩۰-۹]/g, (d) => { const code = d.charCodeAt(0); return code >= 0x0660 && code <= 0x0669 ? String(code - 0x0660) : String(code - 0x06f0); });
       const compactReading = normalizedReading.replace(/\s/g, "");
       const numericReading = compactReading.replace(/,/g, ".");
       const validReadingShape = /^(?:\d{1,12}|\d{1,12}\.\d{1,3})$/.test(numericReading);
@@ -161,14 +109,13 @@ export const readMeterFromImage = createServerFn({ method: "POST" })
       const serialMatch = exactSerialMatch(data.knownMeterNumber, [meterNumber, ...otherNumbers]);
       return { readingValue, readingDigits: normalizedReading, confidence, meterNumber, otherNumbers, ambiguous: parsed.ambiguous === true || readingValue == null, serialMatch };
     }
-
+    if (!canonicalMeterNumber(data.knownMeterNumber ?? "")) return { readingValue: null, confidence: 0, meterNumber: null, otherNumbers: [], ambiguous: true, serialMatch: "unknown" };
     const first = await runPass();
     const firstBelowPrevious = data.previousReading != null && first.readingValue != null && first.readingValue < data.previousReading;
     const firstAcceptable = first.serialMatch === "match" && first.readingValue != null && !first.ambiguous && first.confidence >= 85 && !firstBelowPrevious;
     if (!firstAcceptable) {
       let second: Pass;
-      try { second = await runPass(); }
-      catch { return { ...first, readingValue: null, ambiguous: true, serialMatch: first.serialMatch }; }
+      try { second = await runPass(); } catch { return { ...first, readingValue: null, ambiguous: true, serialMatch: first.serialMatch }; }
       const secondBelowPrevious = data.previousReading != null && second.readingValue != null && second.readingValue < data.previousReading;
       const sameSerial = first.serialMatch === "match" && second.serialMatch === "match";
       const sameReading = first.readingValue != null && second.readingValue != null && first.readingValue === second.readingValue;
