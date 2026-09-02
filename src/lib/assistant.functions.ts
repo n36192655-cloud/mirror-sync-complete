@@ -39,7 +39,12 @@ function validateAsk(input: unknown): AskInput {
 }
 
 const yemenToday = () =>
-  new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Aden", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date());
+  new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Aden",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(new Date());
 
 export const askAssistant = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
@@ -60,19 +65,20 @@ export const askAssistant = createServerFn({ method: "POST" })
 مبادئ الدقة:
 1. ممنوع اختراع أي رقم أو اسم أو تاريخ أو حالة. كل حقيقة رقمية يجب أن تأتي من أداة نفذتها الآن.
 2. لا تستخدم بيانات الواجهة المحلية كمصدر حقيقة؛ الأدوات الخادمية وقاعدة البيانات هي المصدر.
-3. للمشترك المحدد: ابدأ بـ search_customers. إذا وجدت أكثر من تطابق فلا تختار واحداً من نفسك؛ اطلب من المستخدم الاختيار.
+3. للمشترك المحدد: ابدأ بـ search_customers. إذا وجدت أكثر من تطابق، لا تختار واحداً من نفسك ولا تستدعِ أي أداة تفاصيل؛ انتظر اختيار المستخدم.
 4. إذا لم تجد مشتركاً، صرّح بذلك ولا تعرض بيانات مشترك آخر.
 5. لأسئلة الشهر/السنة/الفترة عن مشترك، استخدم get_customer_period_summary بعد الحصول على UUID. لا تجمع «آخر القراءات» بدلاً من الفترة المطلوبة.
 6. لأسئلة أعلى/أقل فاتورة استخدم get_customer_period_summary للفترة المحددة أو list_bills إذا كان السؤال عاماً.
 7. المدفوعات المالية المعتمدة فقط هي status=approved. الفواتير غير المسددة تُحسب من المتبقي الفعلي، ولا تعتبر الفاتورة مدفوعة لمجرد وجود دفعة معلقة.
 8. الرصيد الحالي مصدره customer_balances.current_balance.
 9. للاستهلاك التحليلي استخدم القراءات المعتمدة فقط. لا تخلط pending/rejected في إجمالي الاستهلاك.
-10. لكفاءة المشروع والهدر/الفاقد استخدم get_project_efficiency. عرّف الفاقد بأنه فرق الإنتاج المسجل والاستهلاك المعتمد، ولا تدّعِ معرفة سبب الفاقد من هذا المؤشر وحده.
-11. افهم العربية الطبيعية والمرادفات والأخطاء البسيطة، وحوّل «اليوم/أمس/هذا الشهر/الشهر الماضي/هذه السنة» إلى نطاقات تاريخية فعلية باستخدام التاريخ المحلي.
-12. إذا كان السؤال غامضاً لكن توجد احتمالات منطقية داخل النظام، لا تخمّن: اعرض خيارات قصيرة قابلة للنقر عبر [اقتراحات].
-13. الاقتراحات يجب أن تكون مرتبطة بالسؤال الحالي فقط، بحد أقصى 4، ومكتوبة كسؤال كامل يمكن إرساله كما هو.
-14. أجب باختصار مهني، مع ملخص واضح ثم التفاصيل اللازمة. لا تكرر الجداول لأن الواجهة تعرضها تلقائياً.
-15. لا تنفذ أي تغيير في البيانات؛ هذا المساعد للقراءة والتحليل فقط.
+10. لكفاءة المشروع والهدر/الفاقد استخدم get_project_efficiency. الفاقد هنا فرق الإنتاج المسجل والاستهلاك المعتمد؛ لا تدّعِ معرفة سبب الفاقد من هذا المؤشر وحده.
+11. «هذا الشهر» = من أول يوم في الشهر المحلي إلى آخر يوم حتى اليوم. «الشهر الماضي» = الشهر الميلادي السابق كاملاً. «هذه السنة» = من 1 يناير إلى اليوم. «سنة 2025» = 2025-01-01 إلى 2025-12-31. «من X إلى Y» يحترم التاريخين كما هما.
+12. افهم العربية الطبيعية والمرادفات والأخطاء البسيطة، وحوّل الفترات إلى YYYY-MM-DD.
+13. إذا كان السؤال غامضاً لكن توجد احتمالات منطقية داخل النظام، لا تخمّن: اعرض خيارات قصيرة قابلة للنقر عبر [اقتراحات].
+14. الاقتراحات يجب أن تكون مرتبطة بالسؤال الحالي فقط، بحد أقصى 4، ومكتوبة كسؤال كامل يمكن إرساله كما هو.
+15. أجب باختصار مهني، مع ملخص واضح ثم التفاصيل اللازمة. لا تكرر الجداول لأن الواجهة تعرضها تلقائياً.
+16. لا تنفذ أي تغيير في البيانات؛ هذا المساعد للقراءة والتحليل فقط.
 
 في النهاية أضف دائماً: [اقتراحات] سؤال1 | سؤال2 | سؤال3`;
 
@@ -93,6 +99,7 @@ export const askAssistant = createServerFn({ method: "POST" })
     const tables: AssistantTable[] = [];
     const usedTools: string[] = [];
     const allTools = [...ASSISTANT_TOOLS, ...EXTRA_ASSISTANT_TOOLS];
+    const extraToolNames = new Set(EXTRA_ASSISTANT_TOOLS.map((tool) => tool.function.name));
 
     for (let step = 0; step < 6; step++) {
       let payload: { choices?: Array<{ message?: { content?: string | null; tool_calls?: ToolCall[] } }> };
@@ -125,27 +132,51 @@ export const askAssistant = createServerFn({ method: "POST" })
         let args: Record<string, unknown> = {};
         try { args = JSON.parse(call.function.arguments || "{}") as Record<string, unknown>; } catch { args = {}; }
         usedTools.push(call.function.name);
+
         let result;
         try {
-          result = await runAssistantTool(context.supabase, call.function.name, args);
-          if (!result.ok && call.function.name.startsWith("get_customer_")) {
-            // Keep the model aware of validation/query failures without exposing server details.
-            result = { ...result, data: { error: "تعذر الحصول على البيانات المطلوبة من قاعدة البيانات." } };
+          if (extraToolNames.has(call.function.name)) {
+            result = await runExtraAssistantTool(context.supabase, call.function.name, args);
+          } else {
+            result = await runAssistantTool(context.supabase, call.function.name, args);
           }
         } catch (err) {
           console.error("[assistant] tool failed", call.function.name, err);
           result = { ok: false, data: { error: "تعذر تنفيذ الاستعلام." } };
         }
-        if (!result || (result as { ok?: boolean }).ok === undefined) {
-          result = { ok: false, data: { error: "استجابة أداة غير صالحة." } };
-        }
-        const extra = allTools.some((t) => t.function.name === call.function.name && EXTRA_ASSISTANT_TOOLS.some((x) => x.function.name === t.function.name));
-        if (extra) {
-          try { result = await runExtraAssistantTool(context.supabase, call.function.name, args); }
-          catch { result = { ok: false, data: { error: "تعذر تنفيذ الاستعلام." } }; }
-        }
+
         if (result.table && result.table.rows.length > 0) tables.push(result.table);
-        messages.push({ role: "tool", tool_call_id: call.id, content: JSON.stringify(result.data).slice(0, 60000) });
+
+        // Hard safety boundary: ambiguous customer identity never proceeds to financial detail tools.
+        if (call.function.name === "search_customers") {
+          const dataResult = result.data as { found?: boolean; count?: number; matches?: Array<{ name?: string; pay_account?: string; meter_serial?: string }> };
+          if (dataResult.found === false) {
+            return {
+              answer: "لم أعثر على مشترك مطابق لهذا البحث. لن أعرض بيانات مشترك آخر. جرّب رقم الحساب أو الهاتف أو رقم العداد أو اكتب الاسم بشكل أوضح.",
+              tables,
+              tools: usedTools,
+              suggestions: ["ابحث برقم الحساب", "ابحث برقم الهاتف", "ابحث برقم العداد"],
+            };
+          }
+          if ((dataResult.count ?? 0) > 1) {
+            const suggestions = (dataResult.matches ?? []).slice(0, 4).map((m) => {
+              const account = m.pay_account ? ` — حساب ${m.pay_account}` : "";
+              return `اعرض كشف حساب ${m.name ?? "هذا المشترك"}${account}`;
+            });
+            return {
+              answer: "وجدت أكثر من مشترك مطابق. اختر المشترك المقصود من الأزرار أدناه، ولن أعرض تفاصيل مالية قبل تحديد الهوية.",
+              tables,
+              tools: usedTools,
+              suggestions,
+            };
+          }
+        }
+
+        messages.push({
+          role: "tool",
+          tool_call_id: call.id,
+          content: JSON.stringify(result.data).slice(0, 60000),
+        });
       }
     }
 
