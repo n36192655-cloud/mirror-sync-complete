@@ -43,7 +43,7 @@ export function normalizeSerial(v: string) { return normalizeDigits(v).normalize
 const DATE_RE = /^(19|20)\d{2}$|^\d{1,2}[./-]\d{1,2}([./-]\d{2,4})?$/;
 const UNIT_RE = /^(m3|m³|cbm|kwh|lt|l|kg|bar|°c|mm|cm)$/i;
 function classify(text: string, known: string, isReading: boolean): OcrToken["kind"] { const n = normalizeSerial(text); if (known && n === known) return "meter-number"; if (UNIT_RE.test(text.trim())) return "unit"; if (DATE_RE.test(normalizeDigits(text.trim()))) return "date"; if (isReading) return "reading"; return "other"; }
-function readingShape(text: string) { const t = normalizeDigits(text).replace(/[^\d.,]/g, "").replace(/,/g, "."); if (!/^\d{1,8}(\.\d{1,3})?$/.test(t)) return { ok: false, value: null as number | null }; const digits = t.replace(/\D/g, ""); if (digits.length < 3 || digits.length > 8) return { ok: false, value: null as number | null }; const value = Number(t); return Number.isFinite(value) ? { ok: true, value } : { ok: false, value: null as number | null }; }
+function readingShape(text: string) { const t = normalizeDigits(text).replace(/[^\d.,]/g, "").replace(/,/g, "."); if (!/^\d{1,12}(\.\d{1,3})?$/.test(t)) return { ok: false, value: null as number | null }; const digits = t.replace(/\D/g, ""); if (digits.length < 3 || digits.length > 12) return { ok: false, value: null as number | null }; const value = Number(t); return Number.isFinite(value) ? { ok: true, value } : { ok: false, value: null as number | null }; }
 
 export interface RecognizeOptions { knownMeterNumber?: string; previousReading?: number | null; excludeNumbers?: (string | number | null | undefined)[]; }
 interface FlatWord { text: string; confidence: number; height: number; }
