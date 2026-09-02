@@ -33,11 +33,6 @@ function validate(input: unknown): VisionInput {
   return { imageDataUrl, knownMeterNumber, previousReading };
 }
 
-/**
- * رقم العداد هو هوية، وليس نصاً يمكن مطابقته جزئياً.
- * يسمح فقط بتوحيد المسافات والواصلات وحالة الأحرف؛ لا نحذف أصفاراً
- * ولا نطابق suffix/prefix حتى لا يتحول رقم عداد مختلف إلى تطابق زائف.
- */
 function canonicalMeterNumber(value: string): string {
   return value
     .normalize("NFKC")
@@ -74,9 +69,7 @@ export const readMeterFromImage = createServerFn({ method: "POST" })
     const hints = [
       data.knownMeterNumber ? `رقم العداد المتوقع: ${data.knownMeterNumber}` : null,
       data.previousReading != null ? `القراءة السابقة: ${data.previousReading}` : null,
-    ]
-      .filter(Boolean)
-      .join("\n");
+    ].filter(Boolean).join("\n");
 
     const system = `أنت نظام رؤية متخصص في عدادات المياه.
 
@@ -135,10 +128,7 @@ export const readMeterFromImage = createServerFn({ method: "POST" })
             {
               role: "user",
               content: [
-                {
-                  type: "text",
-                  text: `حلّل صورة عداد المياه. تحقق من هوية العداد أولاً، ثم اقرأ خانات الاستهلاك فقط.\n${hints}`,
-                },
+                { type: "text", text: `حلّل صورة عداد المياه. تحقق من هوية العداد أولاً، ثم اقرأ خانات الاستهلاك فقط.\n${hints}` },
                 { type: "image_url", image_url: { url: data.imageDataUrl } },
               ],
             },
@@ -162,20 +152,15 @@ export const readMeterFromImage = createServerFn({ method: "POST" })
       } catch {
         const match = content.match(/\{[\s\S]*\}/);
         if (match) {
-          try {
-            parsed = JSON.parse(match[0]) as Record<string, unknown>;
-          } catch {
-            parsed = {};
-          }
+          try { parsed = JSON.parse(match[0]) as Record<string, unknown>; } catch { parsed = {}; }
         }
       }
 
-      const readingDigits = typeof parsed.readingDigits === "string"
-        ? parsed.readingDigits.trim()
-        : "";
+      const readingDigits = typeof parsed.readingDigits === "string" ? parsed.readingDigits.trim() : "";
       const digitOnly = readingDigits.replace(/[^0-9]/g, "");
+      const compactDigits = readingDigits.replace(/\s/g, "");
       const readingValue =
-        digitOnly.length >= 1 && digitOnly.length <= 12 && digitOnly.length === readingDigits.replace(/\s/g, "").length
+        digitOnly.length >= 1 && digitOnly.length <= 12 && digitOnly.length === compactDigits.length
           ? Number(digitOnly)
           : null;
 
@@ -204,7 +189,6 @@ export const readMeterFromImage = createServerFn({ method: "POST" })
       };
     }
 
-    // لا يمكن بدء دورة قراءة موثوقة إذا لم نعرف العداد المرتبط بالمشترك.
     if (!canonicalMeterNumber(data.knownMeterNumber ?? "")) {
       return {
         readingValue: null,
@@ -217,72 +201,27 @@ export const readMeterFromImage = createServerFn({ method: "POST" })
     }
 
     const first = await runPass();
-
-    const firstBelowPrevious =
-      data.previousReading != null &&
-      first.readingValue != null &&
-      first.readingValue < data.previousReading;
-
+    const firstBelowPrevious = data.previousReading != null && first.readingValue != null && first.readingValue < data.previousReading;
     const firstAcceptable =
-      first.serialMatch === "match" &&
-      first.readingValue != null &&
-      !first.ambiguous &&
-      first.confidence >= 85 &&
-      !firstBelowPrevious;
+      first.serialMatch === "match" && first.readingValue != null && !first.ambiguous && first.confidence >= 85 && !firstBelowPrevious;
 
-    // أي شك في الهوية أو القراءة يستدعي مرور تحقق مستقل.
     if (!firstAcceptable) {
       let second: Pass;
-      try {
-        second = await runPass();
-      } catch {
-        return {
-          ...first,
-          readingValue: null,
-          ambiguous: true,
-          serialMatch: first.serialMatch,
-        };
+      try { second = await runPass(); }
+      catch {
+        return { ...first, readingValue: null, ambiguous: true, serialMatch: first.serialMatch === "match" ? "unknown" : first.serialMatch };
       }
 
-      const secondBelowPrevious =
-        data.previousReading != null &&
-        second.readingValue != null &&
-        second.readingValue < data.previousReading;
+      const secondBelowPrevious = data.previousReading != null && second.readingValue != null && second.readingValue < data.previousReading;
+      const sameSerial = first.serialMatch === "match" && second.serialMatch === "match";
+      const sameReading = first.readingValue != null && second.readingValue != null && first.readingValue === second.readingValue;
 
-      const sameSerial =
-        first.serialMatch === "match" && second.serialMatch === "match";
-      const sameReading =
-        first.readingValue != null &&
-        second.readingValue != null &&
-        first.readingValue === second.readingValue;
-
-      // لا نقبل نتيجة إذا اختلف المروران أو لم يثبت رقم العداد تطابقاً تاماً.
-      if (
-        !sameSerial ||
-        !sameReading ||
-        second.readingValue == null ||
-        second.ambiguous ||
-        second.confidence < 85 ||
-        secondBelowPrevious
-      ) {
-        const serialMatch =
-          first.serialMatch === "mismatch" || second.serialMatch === "mismatch"
-            ? "mismatch"
-            : "unknown";
-        return {
-          ...second,
-          readingValue: null,
-          ambiguous: true,
-          serialMatch,
-        };
+      if (!sameSerial || !sameReading || second.readingValue == null || second.ambiguous || second.confidence < 85 || secondBelowPrevious) {
+        const serialMatch = first.serialMatch === "mismatch" || second.serialMatch === "mismatch" ? "mismatch" : "unknown";
+        return { ...second, readingValue: null, ambiguous: true, serialMatch };
       }
 
-      return {
-        ...second,
-        confidence: Math.min(100, Math.max(first.confidence, second.confidence, 95)),
-        ambiguous: false,
-        serialMatch: "match",
-      };
+      return { ...second, confidence: Math.min(100, Math.max(first.confidence, second.confidence, 95)), ambiguous: false, serialMatch: "match" };
     }
 
     return first;
