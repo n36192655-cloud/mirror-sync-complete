@@ -7,72 +7,66 @@ interface MeterCameraProps {
   onCapture: (imageFile: File, previewUrl: string) => void;
   onClear?: () => void;
   initialPreview?: string;
+  disabled?: boolean;
 }
 
 /**
- * دالة مساعدة لضغط الصور والحفاظ على وضوح أرقام العداد
- * - الحد الأقصى للأبعاد: 1600x1200
- * - الجودة: JPEG 0.82
- * - الناتج: File حقيقي جاهز للرفع السحابي إلى Supabase Storage Bucket (meter-readings)
+ * التقاط الصورة الأصلية دون إعادة تحجيم أو ضغط إضافي.
+ * نفضّل ImageCapture.takePhoto() للحصول على لقطة الكاميرا الأصلية،
+ * مع fallback إلى PNG كامل الدقة من إطار الفيديو عند عدم توفر ImageCapture.
  */
-const compressImage = (
-  source: HTMLVideoElement | HTMLImageElement | ImageBitmap,
-  width: number,
-  height: number
-): Promise<{ file: File; previewUrl: string }> => {
-  return new Promise((resolve, reject) => {
-    const canvas = document.createElement("canvas");
-    const MAX_WIDTH = 1600;
-    const MAX_HEIGHT = 1200;
+async function captureOriginalFrame(
+  video: HTMLVideoElement,
+  stream: MediaStream,
+): Promise<{ file: File; previewUrl: string }> {
+  const track = stream.getVideoTracks()[0];
 
-    let targetWidth = width;
-    let targetHeight = height;
-
-    if (targetWidth > MAX_WIDTH || targetHeight > MAX_HEIGHT) {
-      if (targetWidth / targetHeight > MAX_WIDTH / MAX_HEIGHT) {
-        targetHeight = Math.round((targetHeight * MAX_WIDTH) / targetWidth);
-        targetWidth = MAX_WIDTH;
-      } else {
-        targetWidth = Math.round((targetWidth * MAX_HEIGHT) / targetHeight);
-        targetHeight = MAX_HEIGHT;
+  if (typeof window !== "undefined" && "ImageCapture" in window && track) {
+    try {
+      const ImageCaptureCtor = (window as unknown as {
+        ImageCapture: new (track: MediaStreamTrack) => { takePhoto: () => Promise<Blob> };
+      }).ImageCapture;
+      const imageCapture = new ImageCaptureCtor(track);
+      const blob = await imageCapture.takePhoto();
+      if (blob.size > 0) {
+        const file = new File([blob], `meter_${Date.now()}.${blob.type.includes("png") ? "png" : "jpg"}`, {
+          type: blob.type || "image/jpeg",
+          lastModified: Date.now(),
+        });
+        return { file, previewUrl: URL.createObjectURL(file) };
       }
+    } catch (error) {
+      console.warn("[Mizan] ImageCapture.takePhoto unavailable; using lossless frame fallback", error);
     }
+  }
 
-    canvas.width = targetWidth;
-    canvas.height = targetHeight;
+  if (!video.videoWidth || !video.videoHeight) {
+    throw new Error("camera frame is not ready");
+  }
 
-    const ctx = canvas.getContext("2d");
-    if (!ctx) {
-      reject(new Error("تعذر إنشاء سياق الرسم للضغط"));
-      return;
-    }
+  const canvas = document.createElement("canvas");
+  // لا يوجد MAX_WIDTH/MAX_HEIGHT ولا resize: نحافظ على كامل دقة إطار الكاميرا.
+  canvas.width = video.videoWidth;
+  canvas.height = video.videoHeight;
+  const ctx = canvas.getContext("2d", { alpha: false });
+  if (!ctx) throw new Error("canvas unavailable");
+  ctx.imageSmoothingEnabled = false;
+  ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
 
-    // تنعيم الصورة وحفظ حواف أرقام العداد بدقة عالية
-    ctx.imageSmoothingEnabled = true;
-    ctx.imageSmoothingQuality = "high";
-    ctx.drawImage(source as CanvasImageSource, 0, 0, targetWidth, targetHeight);
-
-    canvas.toBlob(
-      (blob) => {
-        if (blob) {
-          const fileName = `meter_${Date.now()}.jpg`;
-          const compressedFile = new File([blob], fileName, {
-            type: "image/jpeg",
-            lastModified: Date.now(),
-          });
-          const previewUrl = URL.createObjectURL(compressedFile);
-          resolve({ file: compressedFile, previewUrl });
-        } else {
-          reject(new Error("فشل تحويل الصورة إلى Blob"));
-        }
-      },
-      "image/jpeg",
-      0.82
-    );
+  const blob = await new Promise<Blob>((resolve, reject) => {
+    canvas.toBlob((value) => {
+      if (value) resolve(value);
+      else reject(new Error("failed to create lossless image"));
+    }, "image/png");
   });
-};
 
-/** سلسلة قيود متدرجة: كاميرا خلفية للهاتف ← أي كاميرا خلفية ← أي كاميرا (لابتوب). */
+  const file = new File([blob], `meter_${Date.now()}.png`, {
+    type: "image/png",
+    lastModified: Date.now(),
+  });
+  return { file, previewUrl: URL.createObjectURL(file) };
+}
+
 const CONSTRAINT_CHAIN: MediaStreamConstraints[] = [
   {
     video: {
@@ -99,15 +93,15 @@ function describeCameraError(err: unknown): string {
   switch (name) {
     case "NotAllowedError":
     case "SecurityError":
-      return "تم رفض إذن الكاميرا. افتح إعدادات المتصفح واسمح بالوصول للكاميرا لهذا الموقع، ثم أعد المحاولة. يمكنك بدلاً من ذلك اختيار صورة من المعرض.";
+      return "تم رفض إذن الكاميرا. افتح إعدادات المتصفح واسمح بالوصول للكاميرا لهذا الموقع، ثم أعد المحاولة.";
     case "NotFoundError":
     case "OverconstrainedError":
-      return "لم يتم العثور على كاميرا متاحة على هذا الجهاز. استخدم خيار اختيار صورة من المعرض.";
+      return "لم يتم العثور على كاميرا خلفية متاحة على هذا الجهاز.";
     case "NotReadableError":
     case "AbortError":
       return "الكاميرا مشغولة من تطبيق آخر أو تعذّر تشغيلها. أغلق التطبيقات الأخرى التي تستخدم الكاميرا ثم أعد المحاولة.";
     default:
-      return "تعذر فتح الكاميرا. تأكد من صلاحيات الكاميرا واستخدام اتصال آمن (HTTPS)، أو استخدم صورة من المعرض.";
+      return "تعذر فتح الكاميرا. تأكد من صلاحيات الكاميرا واستخدام اتصال آمن (HTTPS).";
   }
 }
 
@@ -115,6 +109,7 @@ export const MeterCamera: React.FC<MeterCameraProps> = ({
   onCapture,
   onClear,
   initialPreview,
+  disabled = false,
 }) => {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -122,49 +117,35 @@ export const MeterCamera: React.FC<MeterCameraProps> = ({
   const streamRef = useRef<MediaStream | null>(null);
   const previewUrlRef = useRef<string | null>(initialPreview ?? null);
 
-  const [isCameraActive, setIsCameraActive] = useState<boolean>(false);
-  const [isStarting, setIsStarting] = useState<boolean>(false);
-  const [isStreamReady, setIsStreamReady] = useState<boolean>(false);
+  const [isCameraActive, setIsCameraActive] = useState(false);
+  const [isStarting, setIsStarting] = useState(false);
+  const [isStreamReady, setIsStreamReady] = useState(false);
   const [previewUrl, setPreviewUrl] = useState<string | null>(initialPreview || null);
   const [error, setError] = useState<string | null>(null);
-  const [isCompressing, setIsCompressing] = useState<boolean>(false);
+  const [isCapturing, setIsCapturing] = useState(false);
 
-  // إيقاف بث الكاميرا وتفريغ الموارد — يُستدعى عند الإلغاء والالتقاط وunmount
   const stopCamera = useCallback(() => {
     const stream = streamRef.current;
     if (stream) {
       stream.getTracks().forEach((track) => {
-        try {
-          track.stop();
-        } catch {
-          /* تجاهل */
-        }
+        try { track.stop(); } catch { /* ignore */ }
       });
       streamRef.current = null;
     }
-
     const video = videoRef.current;
     if (video) {
-      try {
-        video.pause();
-      } catch {
-        /* تجاهل */
-      }
+      try { video.pause(); } catch { /* ignore */ }
       video.srcObject = null;
       video.removeAttribute("src");
       video.load();
     }
-
     setIsStreamReady(false);
     setIsCameraActive(false);
   }, []);
 
-  // تنظيف روابط ObjectURL لمنع تسريب الذاكرة (عبر ref حتى لا يتغير المرجع)
   const cleanupPreview = useCallback(() => {
     const url = previewUrlRef.current;
-    if (url && url.startsWith("blob:")) {
-      URL.revokeObjectURL(url);
-    }
+    if (url && url.startsWith("blob:")) URL.revokeObjectURL(url);
     previewUrlRef.current = null;
   }, []);
 
@@ -173,20 +154,14 @@ export const MeterCamera: React.FC<MeterCameraProps> = ({
     setPreviewUrl(url);
   }, []);
 
-  // تنظيف نهائي واحد فقط عند إزالة المكوّن — لا يعتمد على previewUrl المتغير
-  useEffect(() => {
-    return () => {
-      stopCamera();
-      cleanupPreview();
-    };
+  useEffect(() => () => {
+    stopCamera();
+    cleanupPreview();
   }, [stopCamera, cleanupPreview]);
 
-  // إيقاف البث إذا خرج المستخدم من التبويب/الصفحة (منع stream في الخلفية)
   useEffect(() => {
     if (!isCameraActive) return;
-    const onHide = () => {
-      if (document.visibilityState === "hidden") stopCamera();
-    };
+    const onHide = () => { if (document.visibilityState === "hidden") stopCamera(); };
     document.addEventListener("visibilitychange", onHide);
     window.addEventListener("pagehide", stopCamera);
     return () => {
@@ -197,14 +172,12 @@ export const MeterCamera: React.FC<MeterCameraProps> = ({
 
   const attachStream = useCallback(async (stream: MediaStream) => {
     const video = videoRef.current;
-    if (!video) return;
-
+    if (!video) throw new Error("video element unavailable");
     video.srcObject = stream;
     video.muted = true;
     video.setAttribute("playsinline", "true");
     video.setAttribute("muted", "true");
 
-    // انتظار توفر أبعاد الفيديو فعلياً — يمنع الشاشة السوداء
     if (video.readyState < 2) {
       await new Promise<void>((resolve) => {
         let done = false;
@@ -218,41 +191,26 @@ export const MeterCamera: React.FC<MeterCameraProps> = ({
         window.setTimeout(finish, 3000);
       });
     }
-
-    try {
-      await video.play();
-    } catch {
-      // بعض المتصفحات تمنع التشغيل التلقائي — إعادة محاولة صامتة
-      video.muted = true;
-      await video.play().catch(() => undefined);
-    }
+    await video.play();
   }, []);
 
   const startCamera = useCallback(async () => {
+    if (disabled || previewUrl) return;
     setError(null);
-
     if (typeof window !== "undefined" && !window.isSecureContext) {
-      setError(
-        "الكاميرا تتطلب اتصالاً آمناً (HTTPS). افتح التطبيق عبر رابط HTTPS أو استخدم صورة من المعرض."
-      );
+      setError("الكاميرا تتطلب اتصالاً آمناً (HTTPS).");
       return;
     }
-
     if (!navigator.mediaDevices?.getUserMedia) {
-      setError(
-        "هذا المتصفح لا يدعم فتح الكاميرا مباشرة. استخدم خيار اختيار صورة من المعرض."
-      );
+      setError("هذا المتصفح لا يدعم الكاميرا المباشرة.");
       return;
     }
 
     setIsStarting(true);
-    // إظهار عنصر الفيديو قبل الطلب حتى يكون الـref جاهزاً عند وصول البث
     setIsCameraActive(true);
     setIsStreamReady(false);
-
     let stream: MediaStream | null = null;
     let lastError: unknown = null;
-
     for (const constraints of CONSTRAINT_CHAIN) {
       try {
         stream = await navigator.mediaDevices.getUserMedia(constraints);
@@ -261,124 +219,90 @@ export const MeterCamera: React.FC<MeterCameraProps> = ({
         lastError = err;
       }
     }
-
     if (!stream) {
-      console.error("Camera access error:", lastError);
       setIsStarting(false);
       setIsCameraActive(false);
       setError(describeCameraError(lastError));
       return;
     }
-
     streamRef.current = stream;
-
-    // إذا أُلغيت العملية أثناء الانتظار، أوقف البث فوراً
     if (!videoRef.current) {
-      stream.getTracks().forEach((t) => t.stop());
+      stream.getTracks().forEach((track) => track.stop());
       streamRef.current = null;
       setIsStarting(false);
       setIsCameraActive(false);
+      setError("تعذر تجهيز معاينة الكاميرا.");
       return;
     }
-
     try {
       await attachStream(stream);
       setIsStreamReady(true);
     } catch (err) {
       console.error("Camera preview error:", err);
-      setError("تعذر عرض معاينة الكاميرا. أعد المحاولة أو استخدم صورة من المعرض.");
       stopCamera();
+      setError("تعذر عرض معاينة الكاميرا. أعد المحاولة.");
     } finally {
       setIsStarting(false);
     }
-  }, [attachStream, stopCamera]);
+  }, [attachStream, disabled, previewUrl, stopCamera]);
 
   const capturePhoto = useCallback(async () => {
+    if (disabled || previewUrl || isCapturing) return;
     const video = videoRef.current;
-    if (!video) return;
-
-    if (!video.videoWidth || !video.videoHeight) {
+    const stream = streamRef.current;
+    if (!video || !stream || !isStreamReady) {
       setError("لم تكتمل معاينة الكاميرا بعد. انتظر لحظة ثم أعد المحاولة.");
       return;
     }
-
-    setIsCompressing(true);
+    setIsCapturing(true);
     setError(null);
-
     try {
-      const { file, previewUrl: newPreview } = await compressImage(
-        video,
-        video.videoWidth,
-        video.videoHeight
-      );
-
+      const { file, previewUrl: newPreview } = await captureOriginalFrame(video, stream);
       cleanupPreview();
       applyPreview(newPreview);
       stopCamera();
+      // onCapture لا يُستدعى إلا مرة واحدة لهذه الدورة.
       onCapture(file, newPreview);
     } catch (err) {
       console.error("Error capturing meter photo:", err);
-      setError("حدث خطأ أثناء التقاط وضغط صورة العداد.");
+      setError("حدث خطأ أثناء التقاط الصورة الأصلية. أعد المحاولة.");
     } finally {
-      setIsCompressing(false);
+      setIsCapturing(false);
     }
-  }, [stopCamera, onCapture, cleanupPreview, applyPreview]);
+  }, [applyPreview, cleanupPreview, disabled, isCapturing, isStreamReady, onCapture, previewUrl, stopCamera]);
 
-  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleFileUpload = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
     const selectedFile = e.target.files?.[0];
-    if (!selectedFile) return;
-
-    // حماية مؤكدة من اختيار ملفات غير الصور
+    if (!selectedFile || disabled || previewUrl) return;
     if (!selectedFile.type.startsWith("image/")) {
-      setError("يرجى اختيار ملف صورة صالح (JPG, PNG, WEBP).");
+      setError("يرجى اختيار ملف صورة صالح.");
       if (fileInputRef.current) fileInputRef.current.value = "";
+      if (nativeInputRef.current) nativeInputRef.current.value = "";
       return;
     }
 
-    setIsCompressing(true);
-    setError(null);
+    // لا نمرر الصورة عبر canvas ولا نعيد ترميزها: الملف الأصلي هو الذي يُحفظ.
+    const originalFile = new File([selectedFile], selectedFile.name || `meter_${Date.now()}`, {
+      type: selectedFile.type,
+      lastModified: selectedFile.lastModified || Date.now(),
+    });
+    const newPreview = URL.createObjectURL(originalFile);
+    cleanupPreview();
+    applyPreview(newPreview);
+    stopCamera();
+    onCapture(originalFile, newPreview);
+    if (fileInputRef.current) fileInputRef.current.value = "";
+    if (nativeInputRef.current) nativeInputRef.current.value = "";
+  }, [applyPreview, cleanupPreview, disabled, onCapture, previewUrl, stopCamera]);
 
-    const img = new Image();
-    const objectUrl = URL.createObjectURL(selectedFile);
-
-    img.onload = async () => {
-      try {
-        const { file, previewUrl: newPreview } = await compressImage(
-          img,
-          img.naturalWidth || 1280,
-          img.naturalHeight || 720
-        );
-        URL.revokeObjectURL(objectUrl);
-
-        cleanupPreview();
-        applyPreview(newPreview);
-        stopCamera();
-        onCapture(file, newPreview);
-      } catch (err) {
-        console.error("Error compressing gallery image:", err);
-        setError("تعذر معالجة وضغط الصورة المختارة.");
-      } finally {
-        setIsCompressing(false);
-        if (fileInputRef.current) fileInputRef.current.value = "";
-      }
-    };
-
-    img.onerror = () => {
-      URL.revokeObjectURL(objectUrl);
-      setIsCompressing(false);
-      setError("تعذر تحميل ملف الصورة المحدد. يرجى اختيار ملف صورة آخر.");
-      if (fileInputRef.current) fileInputRef.current.value = "";
-    };
-
-    img.src = objectUrl;
-  };
-
-  const handleReset = () => {
+  const handleReset = useCallback(() => {
     cleanupPreview();
     setPreviewUrl(null);
     setError(null);
-    if (onClear) onClear();
-  };
+    if (fileInputRef.current) fileInputRef.current.value = "";
+    if (nativeInputRef.current) nativeInputRef.current.value = "";
+    onClear?.();
+  }, [cleanupPreview, onClear]);
 
   return (
     <div className="flex flex-col items-center justify-center w-full gap-4 p-4 border rounded-xl bg-card shadow-sm dir-rtl">
@@ -391,69 +315,27 @@ export const MeterCamera: React.FC<MeterCameraProps> = ({
 
       {!previewUrl && !isCameraActive && (
         <div className="flex flex-col sm:flex-row gap-3 w-full justify-center">
-          <Button
-            type="button"
-            onClick={startCamera}
-            disabled={isCompressing || isStarting}
-            className="gap-2 bg-primary text-primary-foreground"
-          >
+          <Button type="button" onClick={startCamera} disabled={disabled || isStarting} className="gap-2 bg-primary text-primary-foreground">
             <Camera className="w-4 h-4" />
             فتح الكاميرا للالتقاط
           </Button>
-
-          <Button
-            type="button"
-            variant="outline"
-            disabled={isCompressing}
-            onClick={() => nativeInputRef.current?.click()}
-            className="gap-2"
-          >
+          <Button type="button" variant="outline" disabled={disabled || isStarting} onClick={() => nativeInputRef.current?.click()} className="gap-2">
             <Camera className="w-4 h-4" />
             كاميرا النظام
           </Button>
-
-          <Button
-            type="button"
-            variant="outline"
-            disabled={isCompressing}
-            onClick={() => fileInputRef.current?.click()}
-            className="gap-2"
-          >
+          <Button type="button" variant="outline" disabled={disabled || isStarting} onClick={() => fileInputRef.current?.click()} className="gap-2">
             <Upload className="w-4 h-4" />
             اختيار صورة من المعرض
           </Button>
         </div>
       )}
 
-      {/* حقل الملف يبقى دائماً في الشجرة حتى لا يفقد المرجع */}
-      <input
-        ref={fileInputRef}
-        type="file"
-        accept="image/*"
-        className="hidden"
-        onChange={handleFileUpload}
-      />
-      {/* كاميرا النظام — بديل مضمون داخل الـiframe أو عند رفض getUserMedia */}
-      <input
-        ref={nativeInputRef}
-        type="file"
-        accept="image/*"
-        capture="environment"
-        className="hidden"
-        onChange={handleFileUpload}
-      />
+      <input ref={fileInputRef} type="file" accept="image/*" className="hidden" onChange={handleFileUpload} />
+      <input ref={nativeInputRef} type="file" accept="image/*" capture="environment" className="hidden" onChange={handleFileUpload} />
 
       {isCameraActive && (
         <div className="relative w-full max-w-md overflow-hidden rounded-lg bg-black aspect-video flex items-center justify-center">
-          <video
-            ref={videoRef}
-            className="w-full h-full object-cover"
-            playsInline
-            autoPlay
-            muted
-          />
-
-          {/* إطار توجيه القراءة: وجّه شبّاك الأرقام داخل المستطيل */}
+          <video ref={videoRef} className="w-full h-full object-cover" playsInline autoPlay muted />
           {isStreamReady && (
             <div className="pointer-events-none absolute inset-0">
               <div className="absolute inset-0 bg-black/45 [clip-path:polygon(0_0,100%_0,100%_100%,0_100%,0_32%,12%_32%,12%_68%,88%_68%,88%_32%,0_32%)]" />
@@ -465,71 +347,36 @@ export const MeterCamera: React.FC<MeterCameraProps> = ({
                 <span className="absolute inset-x-0 top-1/2 h-px bg-emerald-300/50" />
               </div>
               <p className="absolute top-3 inset-x-0 text-center text-[11px] text-white/95 px-3">
-                ضع شبّاك أرقام العداد داخل الإطار · اقترب حتى تملأ الأرقام عرض الإطار · ثبّت الهاتف
+                ضع شبّاك الأرقام داخل الإطار · اقترب حتى تملأ الأرقام الإطار · ثبّت الهاتف
               </p>
             </div>
           )}
-
           {!isStreamReady && (
             <div className="absolute inset-0 flex items-center justify-center gap-2 text-sm text-white/90 bg-black/60">
-              <Loader2 className="w-4 h-4 animate-spin" />
-              جاري تشغيل الكاميرا…
+              <Loader2 className="w-4 h-4 animate-spin" /> جاري تشغيل الكاميرا…
             </div>
           )}
-
-
           <div className="absolute bottom-4 flex gap-4">
-            <Button
-              type="button"
-              onClick={capturePhoto}
-              disabled={isCompressing || !isStreamReady}
-              variant="default"
-              className="gap-2 bg-emerald-600 hover:bg-emerald-700 text-white"
-            >
+            <Button type="button" onClick={capturePhoto} disabled={disabled || isCapturing || !isStreamReady || !!previewUrl} className="gap-2 bg-emerald-600 hover:bg-emerald-700 text-white">
               <Check className="w-4 h-4" />
-              {isCompressing ? "جاري الضغط..." : "التقاط القراءة"}
+              {isCapturing ? "جاري التقاط الصورة…" : "التقاط الصورة"}
             </Button>
-
-            <Button
-              type="button"
-              onClick={stopCamera}
-              disabled={isCompressing}
-              variant="destructive"
-            >
-              إلغاء
-            </Button>
+            <Button type="button" onClick={stopCamera} disabled={isCapturing} variant="destructive">إلغاء</Button>
           </div>
         </div>
       )}
 
       {previewUrl && (
         <div className="flex flex-col items-center gap-3 w-full max-w-md">
-          <div className="relative w-full aspect-video rounded-lg overflow-hidden border">
-            <img
-              src={previewUrl}
-              alt="معاينة صورة العداد"
-              className="w-full h-full object-cover"
-            />
+          <div className="relative w-full aspect-video rounded-lg overflow-hidden border bg-black">
+            <img src={previewUrl} alt="معاينة صورة العداد" className="w-full h-full object-contain" />
           </div>
-
+          <div className="rounded-md border bg-muted/30 px-3 py-2 text-xs text-center">
+            تم التقاط صورة واحدة بجودتها الأصلية. لا يمكن التقاط صورة ثانية قبل إعادة ضبط العملية.
+          </div>
           <div className="flex flex-wrap gap-2 justify-center">
-            <Button
-              type="button"
-              onClick={handleReset}
-              variant="outline"
-              className="gap-2 text-destructive border-destructive hover:bg-destructive/10"
-            >
-              <RefreshCw className="w-4 h-4" />
-              إعادة التقاط الصورة
-            </Button>
-            <Button
-              type="button"
-              variant="outline"
-              className="gap-2"
-              onClick={() => fileInputRef.current?.click()}
-            >
-              <Upload className="w-4 h-4" />
-              اختيار صورة من المعرض
+            <Button type="button" onClick={handleReset} variant="outline" disabled={disabled} className="gap-2 text-destructive border-destructive hover:bg-destructive/10">
+              <RefreshCw className="w-4 h-4" /> إعادة الالتقاط
             </Button>
           </div>
         </div>
