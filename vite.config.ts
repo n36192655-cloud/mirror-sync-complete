@@ -28,6 +28,9 @@ export default defineConfig({
         devOptions: { enabled: false },
         workbox: {
           globPatterns: ["**/*.{js,css,woff2,png,svg,ico,html}"],
+          // موارد Tesseract الضخمة تُخزَّن عند الطلب (prewarm) لا في precache
+          globIgnores: ["**/tesseract/**"],
+
           // مهم: لا نستخدم navigateFallback هنا. في generateSW يُسجَّل NavigationRoute
           // الخاص به قبل runtimeCaching، فيبتلع كل تنقّل أوفلاين ويعرض offline.html
           // حتى لو كانت نسخة الصفحة محفوظة. بدلاً من ذلك نتعامل مع التنقّل عبر
