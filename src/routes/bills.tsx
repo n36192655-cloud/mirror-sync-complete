@@ -1,6 +1,8 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useState, useMemo } from "react";
 import { useStore, billBalance } from "@/lib/store";
+import { recordPayment } from "@/lib/financial-rpc";
+import { mappedUuid } from "@/lib/id-map";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
@@ -10,7 +12,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { fmtYER } from "@/lib/pricing";
-import { Printer, Wallet, Droplets, Smartphone, ShieldCheck, Search } from "lucide-react";
+import { Printer, Wallet, Droplets, Smartphone, Search } from "lucide-react";
 import { toast } from "sonner";
 import { useAuth } from "@/lib/auth";
 
@@ -20,7 +22,7 @@ export const Route = createFileRoute("/bills")({
 });
 
 function BillsPage() {
-  const { bills, meters, customers, addPayment, payments } = useStore();
+  const { bills, meters, customers, payments, hydrateFromSupabase } = useStore();
   const { user } = useAuth();
   const isCashier = user?.role === "collector";
   const [tab, setTab] = useState<"all" | "unpaid" | "paid">("all");
@@ -28,6 +30,7 @@ function BillsPage() {
   const [payFor, setPayFor] = useState<number | null>(null);
   const [amount, setAmount] = useState("");
   const [method, setMethod] = useState<"cash" | "wallet">("cash");
+  const [savingPayment, setSavingPayment] = useState(false);
   const [printBill, setPrintBill] = useState<number | null>(null);
   const [kuraimiFor, setKuraimiFor] = useState<number | null>(null);
 
@@ -54,6 +57,34 @@ function BillsPage() {
       return name.includes(q) || phone.includes(q) || meterNum.includes(q);
     });
   }, [bills, tab, search, customerById, meterByCustomerId]);
+
+  async function submitPayment() {
+    if (payFor === null) return;
+    const value = Number(amount);
+    if (!Number.isFinite(value) || value <= 0) {
+      toast.error("المبلغ يجب أن يكون أكبر من صفر");
+      return;
+    }
+    setSavingPayment(true);
+    try {
+      await recordPayment({
+        billId: mappedUuid("bill", payFor),
+        amount: value,
+        method,
+        clientUuid: crypto.randomUUID(),
+      });
+      await hydrateFromSupabase();
+      const id = payFor;
+      setPayFor(null);
+      setAmount("");
+      toast.success("تم تسجيل الدفعة في قاعدة البيانات بحالة معلقة — بانتظار اعتماد الإدارة");
+      if (isCashier) setPrintBill(id);
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "تعذّر تسجيل الدفعة");
+    } finally {
+      setSavingPayment(false);
+    }
+  }
 
   return (
     <div className="space-y-6">
@@ -145,34 +176,28 @@ function BillsPage() {
         </CardContent>
       </Card>
 
-      <Dialog open={payFor !== null} onOpenChange={(v) => !v && setPayFor(null)}>
+      <Dialog open={payFor !== null} onOpenChange={(v) => !v && !savingPayment && setPayFor(null)}>
         <DialogContent>
-          <DialogHeader><DialogTitle>تسجيل دفعة نقدية</DialogTitle></DialogHeader>
+          <DialogHeader><DialogTitle>تسجيل دفعة</DialogTitle></DialogHeader>
           <div className="space-y-3">
-            <div><Label>المبلغ</Label><Input type="number" value={amount} onChange={(e) => setAmount(e.target.value)} /></div>
+            <div><Label>المبلغ</Label><Input type="number" min="0.001" step="0.001" value={amount} onChange={(e) => setAmount(e.target.value)} disabled={savingPayment} /></div>
             <div>
               <Label>طريقة الدفع</Label>
-              <Select value={method} onValueChange={(v: "cash" | "wallet") => setMethod(v)}>
+              <Select value={method} onValueChange={(v: "cash" | "wallet") => setMethod(v)} disabled={savingPayment}>
                 <SelectTrigger><SelectValue /></SelectTrigger>
                 <SelectContent>
                   <SelectItem value="cash">نقدي (يتم استلامه من الميدان)</SelectItem>
-                  <SelectItem value="wallet">تحويل بنكي — الكريمي</SelectItem>
+                  <SelectItem value="wallet">تحويل عبر الكريمي (تسجيل طلب فقط)</SelectItem>
                 </SelectContent>
               </Select>
             </div>
             <p className="text-xs text-muted-foreground bg-muted/40 p-2 rounded-md">
-              سيتم إدراج الدفعة بحالة <b>معلقة</b> بانتظار اعتماد الإدارة قبل خصمها من رصيد المشترك.
+              ستُحفظ الدفعة في قاعدة البيانات بحالة <b>معلقة</b>، ولن تخصم من الرصيد حتى تعتمدها الإدارة.
             </p>
           </div>
           <DialogFooter>
-            <Button onClick={() => {
-              if (payFor === null || !amount) return;
-              const p = addPayment({ billId: payFor, amount: +amount, method, by: user?.name });
-              const id = payFor;
-              setPayFor(null);
-              toast.success(`تم تسجيل الدفعة #${p.id} — بانتظار اعتماد الإدارة`);
-              if (isCashier) setPrintBill(id);
-            }}>تأكيد</Button>
+            <Button variant="outline" onClick={() => setPayFor(null)} disabled={savingPayment}>إلغاء</Button>
+            <Button onClick={() => void submitPayment()} disabled={savingPayment}>{savingPayment ? "جارٍ الحفظ…" : "تأكيد الدفعة"}</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -190,59 +215,58 @@ function BillsPage() {
 }
 
 function KuraimiDialog({ id, onClose, onPaid }: { id: number; onClose: () => void; onPaid: (id: number) => void }) {
-  const { bills, customers, addPayment, payments } = useStore();
-  const { user } = useAuth();
+  const { bills, customers, payments, hydrateFromSupabase } = useStore();
   const b = bills.find((x) => x.id === id);
-  const [otp, setOtp] = useState("");
-  const [step, setStep] = useState<"init" | "otp" | "done">("init");
+  const [saving, setSaving] = useState(false);
   if (!b) return null;
   const c = customers.find((x) => x.id === b.customer_id);
   const remaining = billBalance(b, payments);
 
+  async function submit() {
+    if (remaining <= 0) {
+      toast.error("لا يوجد مبلغ مستحق على هذه الفاتورة");
+      return;
+    }
+    setSaving(true);
+    try {
+      await recordPayment({
+        billId: mappedUuid("bill", b.id),
+        amount: remaining,
+        method: "wallet",
+        clientUuid: crypto.randomUUID(),
+      });
+      await hydrateFromSupabase();
+      toast.success("تم تسجيل طلب تحويل الكريمي في قاعدة البيانات — يجب التحقق من التحويل واعتماده من الإدارة");
+      onPaid(b.id);
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "تعذّر تسجيل التحويل");
+    } finally {
+      setSaving(false);
+    }
+  }
+
   return (
-    <Dialog open onOpenChange={onClose}>
+    <Dialog open onOpenChange={(open) => !open && !saving && onClose()}>
       <DialogContent className="max-w-md">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
-            <Smartphone className="w-5 h-5 text-primary" /> تحويل عبر الكريمي
+            <Smartphone className="w-5 h-5 text-primary" /> تسجيل تحويل عبر الكريمي
           </DialogTitle>
         </DialogHeader>
-        <div className="rounded-lg border p-4 bg-gradient-to-br from-primary/5 to-primary/0 space-y-3 text-sm">
-          <div className="flex items-center gap-2 text-xs text-muted-foreground">
-            <ShieldCheck className="w-4 h-4 text-emerald-600" /> اتصال آمن — بنك الكريمي
-          </div>
+        <div className="rounded-lg border p-4 bg-muted/20 space-y-3 text-sm">
           <div className="grid grid-cols-2 gap-2 text-xs">
             <div className="text-muted-foreground">المشترك</div><div className="font-semibold">{c?.name}</div>
             <div className="text-muted-foreground">حساب السداد</div><div className="font-mono" dir="ltr">{c?.pay_account}</div>
-            <div className="text-muted-foreground">فاتورة</div><div className="font-mono">{b.serial}</div>
+            <div className="text-muted-foreground">الفاتورة</div><div className="font-mono">{b.serial}</div>
             <div className="text-muted-foreground">المستحق</div><div className="font-bold text-lg">{fmtYER(remaining)}</div>
           </div>
-          {step === "otp" && (
-            <div className="pt-2 border-t">
-              <Label className="text-xs">رمز التحقق OTP (تجريبي: 1234)</Label>
-              <Input dir="ltr" className="text-center tracking-widest text-lg" maxLength={4} value={otp} onChange={(e) => setOtp(e.target.value)} />
-            </div>
-          )}
-          {step === "done" && (
-            <div className="pt-2 text-center text-emerald-600 font-semibold">✓ تم إرسال إشعار التحويل — بانتظار اعتماد الإدارة</div>
-          )}
+          <p className="text-xs text-muted-foreground border-t pt-3">
+            لا يوجد في هذه النسخة اتصال مصرفي مباشر مع الكريمي. سيتم تسجيل طلب السداد بحالة معلقة، ولا يُعتبر التحويل ناجحاً إلا بعد تحقق الإدارة واعتماد الدفعة.
+          </p>
         </div>
         <DialogFooter>
-          {step === "init" && (
-            <>
-              <Button variant="outline" onClick={onClose}>إلغاء</Button>
-              <Button onClick={() => setStep("otp")}>متابعة الدفع</Button>
-            </>
-          )}
-          {step === "otp" && (
-            <Button onClick={() => {
-              if (otp !== "1234") return toast.error("رمز التحقق غير صحيح");
-              addPayment({ billId: b.id, amount: remaining, method: "wallet", by: user?.name });
-              setStep("done");
-              toast.success("تم إرسال الإشعار — بانتظار اعتماد الإدارة");
-              setTimeout(() => onPaid(b.id), 900);
-            }}>تأكيد OTP</Button>
-          )}
+          <Button variant="outline" onClick={onClose} disabled={saving}>إلغاء</Button>
+          <Button onClick={() => void submit()} disabled={saving || remaining <= 0}>{saving ? "جارٍ التسجيل…" : "تسجيل طلب التحويل"}</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>
