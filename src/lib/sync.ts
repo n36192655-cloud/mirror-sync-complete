@@ -60,12 +60,12 @@ function isDailyMeterConflict(error: { code?: string; message?: string } | null)
   return msg.includes("one_per_meter_day") || msg.includes("tenant_id, meter_id, reading_date") || msg.includes("water_readings_one_per_meter_day_uidx");
 }
 
-export async function addPending(p: Omit<PendingReading,"clientId"|"createdAt"|"status"|"attempts"> & {clientId?: string}, photo?: Blob | null) {
+export async function addPending(p: Omit<PendingReading,"clientId"|"createdAt"|"status"|"attempts"> & {clientId?: string}, photo: Blob) {
   await ensureMigrated(); void requestPersistentStorage();
   const clientId = p.clientId ?? crypto.randomUUID();
-  if (photo) validatePhoto(photo);
-  const item: PendingReading = { ...p, clientId, createdAt: new Date().toISOString(), status: "pending", attempts: 0, hasPhoto: !!photo, photoType: photo?.type };
-  if (photo) await idbPut(STORE_BLOBS, photo, clientId);
+  validatePhoto(photo);
+  const item: PendingReading = { ...p, clientId, createdAt: new Date().toISOString(), status: "pending", attempts: 0, hasPhoto: true, photoType: photo.type };
+  await idbPut(STORE_BLOBS, photo, clientId);
   await idbPut(STORE_QUEUE, item); notify(); return item;
 }
 export async function removePending(clientId: string) { await idbDelete(STORE_QUEUE, clientId); await idbDelete(STORE_BLOBS, clientId); notify(); }
@@ -89,7 +89,8 @@ export async function syncPending(force=false): Promise<{synced:number;failed:nu
         const {data:tenantRow,error:tenantError}=await supabase.rpc("current_tenant_id");
         if(tenantError)throw new Error(`تعذّر تحديد المؤسسة الحالية: ${tenantError.message}`);
         const tenantId=p.tenantId??(tenantRow as unknown as string|null); if(!tenantId)throw new Error("تعذّر تحديد المؤسسة الحالية");
-        if(!photoPath&&p.hasPhoto){
+        if(!photoPath){
+          if(!p.hasPhoto)throw new Error("هذه القراءة المحلية لا تحتوي على صورة أصلية؛ لا يمكن مزامنتها بأمان.");
           const blob=await getPendingPhoto(p.clientId); if(!blob)throw new Error("صورة القراءة غير موجودة في التخزين المحلي؛ لا يمكن مزامنة القراءة بأمان.");
           validatePhoto(blob);
           const path=`tenants/${tenantId}/readings/${p.clientId}.${extensionForType(blob.type)}`;
@@ -102,7 +103,10 @@ export async function syncPending(force=false): Promise<{synced:number;failed:nu
           if(photoPath) await supabase.storage.from(PHOTO_BUCKET).remove([photoPath]).catch(()=>undefined);
           throw new Error("هذه القراءة لم تُزامن: يوجد بالفعل تسجيل ناجح لهذا العداد في نفس اليوم.");
         }
-        if(error&&!isClientUuidConflict(error))throw new Error(error.message);
+        if(error&&!isClientUuidConflict(error)){
+          if(photoPath) await supabase.storage.from(PHOTO_BUCKET).remove([photoPath]).catch(()=>undefined);
+          throw new Error(error.message);
+        }
         await setStatus(p,{status:"synced",photoPath:photoPath??undefined,syncedAt:new Date().toISOString(),lastError:undefined});
         await idbDelete(STORE_BLOBS,p.clientId); synced++;
         void broadcastTenantEvent(tenantId,"reading",{customerId:p.customerId,meterNumber:p.meterNumber,current:p.current,by:p.by,at:new Date().toISOString()});
