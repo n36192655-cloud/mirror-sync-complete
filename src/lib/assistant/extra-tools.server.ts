@@ -27,22 +27,15 @@ export const EXTRA_ASSISTANT_TOOLS = [
     type: "function",
     function: {
       name: "get_customer_period_summary",
-      description:
-        "كشف حساب تحليلي دقيق لمشترك خلال فترة محددة: الاستهلاك المعتمد فقط، إجمالي الفواتير، أعلى وأقل فاتورة، المدفوعات المعتمدة، الفواتير غير المسددة، والرصد الحالي. استخدمه لأي سؤال عن شهر أو سنة أو فترة زمنية محددة.",
-      parameters: {
-        type: "object",
-        properties: periodProps,
-        required: ["customer_id", "from", "to"],
-        additionalProperties: false,
-      },
+      description: "كشف حساب تحليلي دقيق لمشترك خلال فترة محددة: الاستهلاك المعتمد فقط، إجمالي الفواتير، أعلى وأقل فاتورة، المدفوعات المعتمدة، الفواتير غير المسددة، والرصيد الحالي. استخدمه لأي سؤال عن شهر أو سنة أو فترة زمنية محددة.",
+      parameters: { type: "object", properties: periodProps, required: ["customer_id", "from", "to"], additionalProperties: false },
     },
   },
   {
     type: "function",
     function: {
       name: "get_project_efficiency",
-      description:
-        "تحليل كفاءة المشروع خلال فترة: الإنتاج المسجل، الاستهلاك المعتمد، الفاقد المائي، نسبة الفاقد، والتحصيل. الفاقد المائي هنا هو الفرق بين الإنتاج والاستهلاك المعتمد، وليس ادعاءً بتحديد سبب الفاقد.",
+      description: "تحليل كفاءة المشروع خلال فترة: الإنتاج المسجل، الاستهلاك المعتمد، الفاقد المائي الظاهري، نسبة الفاقد، والتحصيل. الفاقد الظاهري هو الإنتاج ناقص الاستهلاك المعتمد؛ إذا أصبح الفرق سالباً فهذا مؤشر عدم اتساق في البيانات ويجب عدم وصفه كفاقد.",
       parameters: {
         type: "object",
         properties: {
@@ -67,9 +60,7 @@ async function getCustomerPeriodSummary(supabase: DB, args: Record<string, unkno
   const from = typeof args.from === "string" ? args.from : "";
   const to = typeof args.to === "string" ? args.to : "";
   if (!isUuid(customerId)) return fail("customer_id يجب أن يكون UUID حقيقياً من search_customers.");
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(from) || !/^\d{4}-\d{2}-\d{2}$/.test(to) || from > to) {
-    return fail("نطاق التاريخ غير صالح. استخدم YYYY-MM-DD وتأكد أن البداية قبل النهاية.");
-  }
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(from) || !/^\d{4}-\d{2}-\d{2}$/.test(to) || from > to) return fail("نطاق التاريخ غير صالح. استخدم YYYY-MM-DD وتأكد أن البداية قبل النهاية.");
 
   const [{ data: customer, error: customerError }, { data: bills, error: billsError }, { data: payments, error: paymentsError }, { data: readings, error: readingsError }, { data: balance, error: balanceError }] = await Promise.all([
     supabase.from("customers").select("id,name,pay_account,phone").eq("id", customerId).maybeSingle(),
@@ -93,9 +84,8 @@ async function getCustomerPeriodSummary(supabase: DB, args: Record<string, unkno
   const consumption = readingList.reduce((s, r) => s + Math.max(n(r.consumption), 0), 0);
   const unpaid = billList.filter((b) => n(b.total) - n(b.paid_amount) > 0.01);
   const unpaidAmount = unpaid.reduce((s, b) => s + Math.max(n(b.total) - n(b.paid_amount), 0), 0);
-  const sortedBills = [...billList].sort((a, b) => n(b.total) - n(a.total));
-  const highest = sortedBills[0] ?? null;
-  const lowest = billList.length ? [...billList].sort((a, b) => n(a.total) - n(b.total))[0] : null;
+  const highest = [...billList].sort((a, b) => n(b.total) - n(a.total))[0] ?? null;
+  const lowest = [...billList].sort((a, b) => n(a.total) - n(b.total))[0] ?? null;
   const collectionPct = billed > 0 ? Math.round((paid / billed) * 1000) / 10 : 0;
 
   return {
@@ -123,16 +113,7 @@ async function getCustomerPeriodSummary(supabase: DB, args: Record<string, unkno
     table: {
       title: `كشف حساب ${customer.name} — ${from} إلى ${to}`,
       columns: ["المؤشر", "القيمة"],
-      rows: [
-        ["الاستهلاك المعتمد م³", consumption],
-        ["إجمالي الفواتير", billed],
-        ["أعلى فاتورة", highest ? n(highest.total) : null],
-        ["أقل فاتورة", lowest ? n(lowest.total) : null],
-        ["المدفوعات المعتمدة", paid],
-        ["الفواتير غير المسددة", unpaid.length],
-        ["المبلغ غير المسدد", unpaidAmount],
-        ["الرصيد الحالي", n(balance?.current_balance)],
-      ],
+      rows: [["الاستهلاك المعتمد م³", consumption], ["إجمالي الفواتير", billed], ["أعلى فاتورة", highest ? n(highest.total) : null], ["أقل فاتورة", lowest ? n(lowest.total) : null], ["المدفوعات المعتمدة", paid], ["الفواتير غير المسددة", unpaid.length], ["المبلغ غير المسدد", unpaidAmount], ["الرصيد الحالي", n(balance?.current_balance)]],
     },
   };
 }
@@ -157,9 +138,10 @@ async function getProjectEfficiency(supabase: DB, args: Record<string, unknown>)
   const consumed = (readings ?? []).reduce((s, r) => s + Math.max(n(r.consumption), 0), 0);
   const billed = (bills ?? []).reduce((s, b) => s + n(b.total), 0);
   const collected = (payments ?? []).reduce((s, p) => s + n(p.amount), 0);
-  const loss = Math.max(produced - consumed, 0);
-  const lossPct = produced > 0 ? Math.round((loss / produced) * 1000) / 10 : 0;
+  const balanceGap = produced - consumed;
+  const lossPct = produced > 0 ? Math.round((balanceGap / produced) * 1000) / 10 : null;
   const collectionPct = billed > 0 ? Math.round((collected / billed) * 1000) / 10 : 0;
+  const dataQuality = balanceGap < 0 ? "تنبيه: الاستهلاك المعتمد أكبر من الإنتاج المسجل؛ راجع اكتمال بيانات الإنتاج والقراءات قبل تفسير الفاقد." : produced === 0 ? "لا يوجد إنتاج مسجل في الفترة المحددة، لذلك لا يمكن حساب نسبة الفاقد." : "الفرق الموجب مؤشر فاقد مائي ظاهري، ولا يحدد وحده سبب الفاقد.";
 
   return {
     ok: true,
@@ -167,25 +149,18 @@ async function getProjectEfficiency(supabase: DB, args: Record<string, unknown>)
       period: { from, to },
       production_m3: produced,
       approved_consumption_m3: consumed,
-      apparent_water_loss_m3: loss,
+      apparent_water_loss_m3: Math.max(balanceGap, 0),
+      apparent_water_balance_gap_m3: balanceGap,
       apparent_water_loss_pct: lossPct,
       billed_amount: billed,
       collected_amount: collected,
       collection_pct: collectionPct,
-      interpretation: produced > 0 ? "الفرق بين الإنتاج والاستهلاك المعتمد مؤشر فاقد مائي ظاهري؛ لا يحدد وحده مصدر الفاقد أو سببه." : "لا يوجد إنتاج مسجل في الفترة المحددة، لذلك لا يمكن حساب نسبة الفاقد.",
+      data_quality_note: dataQuality,
     },
     table: {
       title: `كفاءة المشروع — ${from} إلى ${to}`,
       columns: ["المؤشر", "القيمة"],
-      rows: [
-        ["الإنتاج م³", produced],
-        ["الاستهلاك المعتمد م³", consumed],
-        ["الفاقد المائي الظاهري م³", loss],
-        ["نسبة الفاقد %", lossPct],
-        ["المفوتر", billed],
-        ["المحصّل", collected],
-        ["نسبة التحصيل %", collectionPct],
-      ],
+      rows: [["الإنتاج م³", produced], ["الاستهلاك المعتمد م³", consumed], ["الفاقد المائي الظاهري م³", Math.max(balanceGap, 0)], ["فجوة الإنتاج-الاستهلاك م³", balanceGap], ["نسبة الفاقد %", lossPct], ["المفوتر", billed], ["المحصّل", collected], ["نسبة التحصيل %", collectionPct]],
     },
   };
 }
