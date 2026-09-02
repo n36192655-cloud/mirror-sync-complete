@@ -8,7 +8,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { toast } from "sonner";
-import { Camera, CheckCircle2, Image as ImageIcon, Loader2, MapPin, RefreshCw, ShieldCheck } from "lucide-react";
+import { Camera, CheckCircle2, Image as ImageIcon, Loader2, MapPin, RefreshCw, ShieldCheck, XCircle } from "lucide-react";
 import { fmtYER } from "@/lib/pricing";
 import { MeterCamera } from "@/components/meter-camera";
 import { getGeoFix, type GeoFix } from "@/lib/geolocation";
@@ -34,6 +34,7 @@ function ReadingsPage() {
   const { user } = useAuth();
   const tenantId = user?.tenantId;
   const isReader = user?.role === "reader";
+  const isManager = user?.role === "manager" || user?.role === "super_admin";
   const { items: queue } = useOfflineQueue();
 
   const [customers, setCustomers] = useState<CustomerRow[]>([]);
@@ -54,6 +55,7 @@ function ReadingsPage() {
   const [geoBusy, setGeoBusy] = useState(false);
   const [saving, setSaving] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [approvalBusy, setApprovalBusy] = useState<string | null>(null);
   const [offlineSnapshotAt, setOfflineSnapshotAt] = useState<string | null>(null);
 
   const meterByCustomer = useMemo(() => {
@@ -66,12 +68,21 @@ function ReadingsPage() {
   const selectedMeter = meterId ? meterLinks.find(m => m.id === meterId) ?? null : null;
   const meterNumber = selectedMeter?.number ?? "";
 
-  const lastReading = useMemo(() => {
-    if (!meterId) return null;
-    return readings.filter(r => r.meter_id === meterId && r.status !== "rejected").sort((a, b) => +new Date(b.created_at) - +new Date(a.created_at))[0] ?? null;
-  }, [readings, meterId]);
-  const previousReading = lastReading?.current_reading ?? 0;
+  const previousReading = useMemo(() => {
+    if (!meterId) return 0;
+    const candidates = readings
+      .filter(r => r.meter_id === meterId && r.status !== "rejected" && r.reading_date <= readingDate)
+      .sort((a, b) => b.reading_date.localeCompare(a.reading_date) || +new Date(b.created_at) - +new Date(a.created_at));
+    return candidates[0]?.current_reading ?? 0;
+  }, [readings, meterId, readingDate]);
   const consumption = current === "" ? 0 : Number(current) - previousReading;
+
+  const pendingReadings = useMemo(
+    () => readings
+      .filter(r => r.status === "pending_approval")
+      .sort((a, b) => b.reading_date.localeCompare(a.reading_date) || +new Date(b.created_at) - +new Date(a.created_at)),
+    [readings],
+  );
 
   const refresh = useCallback(async () => {
     if (!tenantId) return;
@@ -134,17 +145,16 @@ function ReadingsPage() {
   async function handleCapture(file: File, previewUrl: string) {
     if (!selectedMeter || !meterNumber) return toast.error("اختر المشترك والعداد المرتبط أولاً");
     setPhotoBlob(file); setPhotoPreview(previewUrl); setOcrSerial(undefined); setOcrReading(null); setCurrent(""); setOcrBusy(true);
-    const previous = lastReading?.current_reading ?? null;
     try {
       if (typeof navigator !== "undefined" && !navigator.onLine) {
         const { recognizeMeterImage } = await import("@/lib/meter-ocr");
-        const res = await recognizeMeterImage(file, { knownMeterNumber: meterNumber, previousReading: previous });
+        const res = await recognizeMeterImage(file, { knownMeterNumber: meterNumber, previousReading: previousReading });
         if (!res.meterNumberMatch || normalizeSerial(res.meterNumberMatch) !== normalizeSerial(meterNumber)) { clearPhoto(); toast.error(`عذراً، هذه الصورة ليست للعداد المرتبط (${meterNumber}). أعد تصوير العداد الصحيح.`); return; }
         if (res.readingValue == null || res.readingAmbiguous) { toast.error("عذراً، تعذر استخراج قراءة واضحة. أعد التصوير مع تقريب شاشة العداد."); return; }
         setOcrSerial(res.meterNumberMatch); setOcrReading(res.readingValue); setCurrent(String(res.readingValue)); toast.success(`تم التحقق من العداد واستخراج القراءة: ${res.readingValue}`); return;
       }
       const [{ fileToDataUrl }, { readMeterFromImage }] = await Promise.all([import("@/lib/meter-ocr"), import("@/lib/meter-vision.functions")]);
-      const ai = await readMeterFromImage({ data: { imageDataUrl: await fileToDataUrl(file), knownMeterNumber: meterNumber, previousReading: previous } });
+      const ai = await readMeterFromImage({ data: { imageDataUrl: await fileToDataUrl(file), knownMeterNumber: meterNumber, previousReading } });
       if (ai.serialMatch !== "match" || !ai.meterNumber || normalizeSerial(ai.meterNumber) !== normalizeSerial(meterNumber)) { clearPhoto(); toast.error(`عذراً، هذه الصورة ليست للعداد المرتبط (${meterNumber}). أعد تصوير العداد الصحيح.`); return; }
       if (ai.readingValue == null || ai.ambiguous) { toast.error("عذراً، تعذر استخراج قراءة واضحة. أعد التصوير مع تقريب شاشة العداد."); return; }
       setOcrSerial(ai.meterNumber); setOcrReading(ai.readingValue); setCurrent(String(ai.readingValue)); toast.success(`تم التحقق من العداد واستخراج القراءة: ${ai.readingValue}`);
@@ -195,6 +205,36 @@ function ReadingsPage() {
     } finally { setSaving(false); }
   }
 
+  async function approvePending(id: string) {
+    setApprovalBusy(id);
+    try {
+      const { error } = await supabase.rpc("approve_reading", { _reading_id: id });
+      if (error) throw new Error(error.message);
+      await refresh();
+      toast.success("تم اعتماد القراءة وإصدار الفاتورة وفق قواعد الخادم");
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "تعذّر اعتماد القراءة");
+    } finally {
+      setApprovalBusy(null);
+    }
+  }
+
+  async function rejectPending(id: string) {
+    const reason = window.prompt("سبب رفض القراءة:", "القراءة تحتاج مراجعة");
+    if (reason === null) return;
+    setApprovalBusy(id);
+    try {
+      const { error } = await supabase.rpc("reject_reading", { _reading_id: id, _reason: reason.trim() || null });
+      if (error) throw new Error(error.message);
+      await refresh();
+      toast.success("تم رفض القراءة وتسجيل سبب الرفض");
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "تعذّر رفض القراءة");
+    } finally {
+      setApprovalBusy(null);
+    }
+  }
+
   return <div className="space-y-6">
     <div className="flex items-start justify-between gap-3"><div><h1 className="text-2xl md:text-3xl font-bold">القراءات</h1><p className="text-sm text-muted-foreground mt-1">الصورة الأصلية محفوظة دون ضغط، ولا تُقبل القراءة إلا بعد التحقق التام من رقم العداد.</p></div><Button size="sm" variant="outline" onClick={() => void refresh()} disabled={loading}><RefreshCw className={`w-4 h-4 ms-1 ${loading ? "animate-spin" : ""}`} /> تحديث</Button></div>
     {offlineSnapshotAt && <div className="rounded-md border px-3 py-2 text-xs bg-amber-500/10">وضع الأوفلاين — البيانات من لقطة محلية محفوظة بتاريخ {new Date(offlineSnapshotAt).toLocaleString("ar")}.</div>}
@@ -211,6 +251,27 @@ function ReadingsPage() {
       <div><Label>تاريخ القراءة</Label><Input type="date" dir="ltr" value={readingDate} max={new Date().toISOString().slice(0, 10)} onChange={e => setReadingDate(e.target.value)} /></div>
       <Button size="lg" onClick={() => void saveReading()} disabled={saving || ocrBusy || !photoBlob || ocrReading == null || !selectedMeter || !selectedCustomer} className="w-full md:w-auto">{saving ? <><Loader2 className="w-4 h-4 ms-1 animate-spin" /> جاري الحفظ…</> : <><CheckCircle2 className="w-4 h-4 ms-1" /> حفظ القراءة</>}</Button>
     </CardContent></Card>
+
+    {isManager && pendingReadings.length > 0 && <Card>
+      <CardHeader><CardTitle className="text-base">قراءات بانتظار اعتماد الإدارة ({pendingReadings.length})</CardTitle></CardHeader>
+      <CardContent className="space-y-2">
+        {pendingReadings.map(r => {
+          const busy = approvalBusy === r.id;
+          return <div key={r.id} className="rounded-md border p-3 flex flex-col md:flex-row md:items-center md:justify-between gap-3">
+            <div className="text-sm space-y-1">
+              <div><span className="text-muted-foreground">العداد:</span> <span className="font-mono" dir="ltr">{r.meter_number}</span></div>
+              <div><span className="text-muted-foreground">التاريخ:</span> {r.reading_date} · <span className="text-muted-foreground">القراءة:</span> <span className="font-mono">{r.current_reading}</span></div>
+              <div><span className="text-muted-foreground">السبب:</span> <Badge variant="outline">{r.flag ?? "مراجعة"}</Badge></div>
+            </div>
+            <div className="flex gap-2">
+              <Button size="sm" onClick={() => void approvePending(r.id)} disabled={busy}><CheckCircle2 className="w-3 h-3 ms-1" /> {busy ? "جارٍ…" : "اعتماد"}</Button>
+              <Button size="sm" variant="destructive" onClick={() => void rejectPending(r.id)} disabled={busy}><XCircle className="w-3 h-3 ms-1" /> رفض</Button>
+            </div>
+          </div>;
+        })}
+      </CardContent>
+    </Card>}
+
     {queue.length > 0 && <Card><CardHeader className="flex flex-row items-center justify-between"><CardTitle className="text-base">قراءات محفوظة على الجهاز ({queue.filter((p: PendingReading) => p.status !== "synced").length})</CardTitle><Button size="sm" variant="outline" onClick={() => void syncPending(true)}><RefreshCw className="w-3 h-3 ms-1" /> مزامنة الآن</Button></CardHeader><CardContent className="space-y-2">{queue.filter((p: PendingReading) => p.status !== "synced").slice(0, 20).map(p => <div key={p.clientId} className="rounded-md border p-2 text-xs">عداد <span className="font-mono" dir="ltr">{p.meterNumber}</span> — قراءة <span className="font-mono">{p.current}</span> — {p.status}</div>)}</CardContent></Card>}
   </div>;
 }
