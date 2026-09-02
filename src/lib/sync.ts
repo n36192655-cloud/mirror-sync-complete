@@ -8,7 +8,7 @@ import { STORE_BLOBS, STORE_QUEUE, idbDelete, idbGet, idbGetAll, idbPut, request
 type ReadingInsert = Database["public"]["Tables"]["water_readings"]["Insert"];
 const PHOTO_BUCKET = "meter-readings";
 const MAX_PHOTO_BYTES = 25 * 1024 * 1024;
-const ALLOWED_IMAGE_TYPES = new Set(["image/jpeg", "image/png", "image/webp"]);
+const ALLOWED_IMAGE_TYPES = new Set(["image/jpeg", "image/jpg", "image/png", "image/webp"]);
 export type QueueStatus = "pending" | "syncing" | "synced" | "failed";
 
 export interface PendingReading {
@@ -98,7 +98,10 @@ export async function syncPending(force=false): Promise<{synced:number;failed:nu
           photoPath=path; await setStatus(p,{status:"syncing",photoPath});
         }
         const {error}=await supabase.from("water_readings").insert({tenant_id:tenantId,customer_id:p.customerId,meter_id:p.meterId,current_reading:p.current,reading_date:p.readingDate,client_uuid:p.clientId,reader_id:p.by,photo_url:photoPath,lat:p.latitude??null,lng:p.longitude??null,accuracy:p.accuracy??null,gps_verified:p.latitude!=null} as ReadingInsert);
-        if(error&&isDailyMeterConflict(error)&&!isClientUuidConflict(error))throw new Error("هذه القراءة لم تُزامن: يوجد بالفعل تسجيل ناجح لهذا العداد في نفس اليوم.");
+        if(error&&isDailyMeterConflict(error)&&!isClientUuidConflict(error)){
+          if(photoPath) await supabase.storage.from(PHOTO_BUCKET).remove([photoPath]).catch(()=>undefined);
+          throw new Error("هذه القراءة لم تُزامن: يوجد بالفعل تسجيل ناجح لهذا العداد في نفس اليوم.");
+        }
         if(error&&!isClientUuidConflict(error))throw new Error(error.message);
         await setStatus(p,{status:"synced",photoPath:photoPath??undefined,syncedAt:new Date().toISOString(),lastError:undefined});
         await idbDelete(STORE_BLOBS,p.clientId); synced++;
