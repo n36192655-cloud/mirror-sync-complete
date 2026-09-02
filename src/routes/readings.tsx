@@ -24,6 +24,7 @@ type FieldCache = { customers: CustomerRow[]; readings: ReadingRow[]; meterLinks
 const fieldCacheKey = (tenantId: string) => `field:${tenantId}`;
 const normalizeSerial = (v: string) => v.normalize("NFKC").trim().toUpperCase().replace(/[\u2010-\u2015\u2212]/g, "-").replace(/[\s_-]+/g, "-").replace(/^-+|-+$/g, "");
 const extensionFor = (type: string) => type === "image/png" ? "png" : type === "image/webp" ? "webp" : "jpg";
+const localDateStamp = () => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`; };
 
 export const Route = createFileRoute("/readings")({
   head: () => ({ meta: [{ title: "القراءات — ميزان" }] }),
@@ -43,7 +44,7 @@ function ReadingsPage() {
   const [q, setQ] = useState("");
   const [customerId, setCustomerId] = useState<string | null>(null);
   const [meterId, setMeterId] = useState<string | null>(null);
-  const [readingDate, setReadingDate] = useState(() => new Date().toISOString().slice(0, 10));
+  const [readingDate, setReadingDate] = useState(() => localDateStamp());
   const [current, setCurrent] = useState("");
   const [photoBlob, setPhotoBlob] = useState<Blob | null>(null);
   const [photoPreview, setPhotoPreview] = useState<string>();
@@ -169,7 +170,7 @@ function ReadingsPage() {
     finally { setGeoBusy(false); }
   }
 
-  function resetAfterSave() { setCurrent(""); setPhotoBlob(null); setPhotoPreview(undefined); setOcrSerial(undefined); setOcrReading(null); setGeo(null); setCameraOpen(false); setReadingDate(new Date().toISOString().slice(0, 10)); }
+  function resetAfterSave() { setCurrent(""); setPhotoBlob(null); setPhotoPreview(undefined); setOcrSerial(undefined); setOcrReading(null); setGeo(null); setCameraOpen(false); setReadingDate(localDateStamp()); }
 
   async function saveReading() {
     if (!tenantId || !user) return toast.error("لا توجد جلسة نشطة");
@@ -248,7 +249,7 @@ function ReadingsPage() {
       {ocrSerial && <div className="rounded-lg border border-emerald-500/40 bg-emerald-500/5 p-3 flex items-center gap-2 text-sm"><ShieldCheck className="w-4 h-4" /> رقم العداد مطابق تماماً: <span className="font-mono" dir="ltr">{ocrSerial}</span></div>}
       {ocrReading != null && <div className="rounded-lg border p-3 grid grid-cols-3 gap-3 text-sm"><Info label="القراءة المستخرجة"><span className="font-mono">{ocrReading}</span></Info><Info label="السابقة"><span className="font-mono">{previousReading}</span></Info><Info label="الاستهلاك"><span className="font-mono">{consumption.toFixed(1)} م³</span></Info></div>}
       {photoPreview && <div className="flex items-center gap-2 text-xs"><Badge variant="outline"><ImageIcon className="w-3 h-3 ms-1" /> الصورة الأصلية جاهزة</Badge><img src={photoPreview} alt="معاينة صورة العداد" className="h-20 rounded border object-contain" /></div>}
-      <div><Label>تاريخ القراءة</Label><Input type="date" dir="ltr" value={readingDate} max={new Date().toISOString().slice(0, 10)} onChange={e => setReadingDate(e.target.value)} /></div>
+      <div><Label>تاريخ القراءة</Label><Input type="date" dir="ltr" value={readingDate} max={localDateStamp()} onChange={e => setReadingDate(e.target.value)} /></div>
       <Button size="lg" onClick={() => void saveReading()} disabled={saving || ocrBusy || !photoBlob || ocrReading == null || !selectedMeter || !selectedCustomer} className="w-full md:w-auto">{saving ? <><Loader2 className="w-4 h-4 ms-1 animate-spin" /> جاري الحفظ…</> : <><CheckCircle2 className="w-4 h-4 ms-1" /> حفظ القراءة</>}</Button>
     </CardContent></Card>
 
