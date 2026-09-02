@@ -18,5 +18,5 @@ jobs:
         with:
           bun-version: latest
       - run: bun install --frozen-lockfile
-      - run: bun run lint -- --format json
+      - run: bun run lint
       - run: bun run build
