@@ -24,7 +24,7 @@ export const LOCAL_TESSERACT_OPTIONS = {
   workerPath: "/tesseract/worker.min.js",
   corePath: "/tesseract/",
   langPath: "/tesseract",
-  gzip: true,
+  gzip: false,
 } as const;
 
 /** تجهيز موارد OCR مسبقاً أثناء الاتصال حتى تعمل أوفلاين لاحقاً. */
@@ -36,7 +36,7 @@ export function prewarmOcrAssets(): Promise<boolean> {
       try {
         const files = [
           "/tesseract/worker.min.js",
-          "/tesseract/eng.traineddata.gz",
+          "/tesseract/eng.traineddata",
           "/tesseract/tesseract-core-simd-lstm.wasm",
           "/tesseract/tesseract-core-simd-lstm.wasm.js",
         ];
