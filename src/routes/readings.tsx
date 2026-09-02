@@ -1,48 +1,30 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { useState, useEffect, useMemo, useCallback } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { supabase } from "@/lib/supabase";
 import { useAuth } from "@/lib/auth";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
 import { toast } from "sonner";
-import {
-  AlertCircle, CheckCircle2, Camera, MapPin, ShieldAlert,
-  Check, X, Image as ImageIcon, Loader2, RefreshCw,
-} from "lucide-react";
+import { Camera, CheckCircle2, Image as ImageIcon, Loader2, MapPin, RefreshCw, ShieldCheck } from "lucide-react";
 import { fmtYER } from "@/lib/pricing";
 import { MeterCamera } from "@/components/meter-camera";
 import { getGeoFix, type GeoFix } from "@/lib/geolocation";
-import { addPending, useOfflineQueue, syncPending, isUnsynced, isNetworkError, retryPending, type PendingReading } from "@/lib/sync";
-import {
-  readFieldCache, saveFieldCache, requestPersistentStorage,
-  saveReadingDraft, readReadingDraft, clearReadingDraft,
-} from "@/lib/offline-db";
+import { addPending, isNetworkError, syncPending, useOfflineQueue, type PendingReading } from "@/lib/sync";
+import { readFieldCache, requestPersistentStorage, saveFieldCache } from "@/lib/offline-db";
 import type { Database } from "@/integrations/supabase/types";
 
 type CustomerRow = Database["public"]["Tables"]["customers"]["Row"];
 type ReadingRow = Database["public"]["Tables"]["water_readings"]["Row"];
-type BillRow = Database["public"]["Tables"]["water_bills"]["Row"];
 
-/** لقطة العمل الميداني المخزّنة محلياً — الحد الأدنى اللازم للقارئ. */
-interface FieldCache {
-  customers: CustomerRow[];
-  readings: ReadingRow[];
-  meterLinks: { id: string; number: string; customer_id: string }[];
-  readingsCount: number;
-  billsCount: number;
-}
+type MeterLink = { id: string; number: string; customer_id: string };
+type FieldCache = { customers: CustomerRow[]; readings: ReadingRow[]; meterLinks: MeterLink[]; readingsCount: number; billsCount: number };
+
 const fieldCacheKey = (tenantId: string) => `field:${tenantId}`;
-
-const QUEUE_LABEL: Record<PendingReading["status"], string> = {
-  pending: "بانتظار المزامنة",
-  syncing: "جاري المزامنة",
-  synced: "تمت المزامنة",
-  failed: "فشلت — سيعاد المحاولة",
-};
+const normalizeSerial = (v: string) => v.normalize("NFKC").trim().toUpperCase().replace(/[\u2010-\u2015\u2212]/g, "-").replace(/[\s_-]+/g, "-").replace(/^-+|-+$/g, "");
+const extensionFor = (type: string) => type === "image/png" ? "png" : type === "image/webp" ? "webp" : "jpg";
 
 export const Route = createFileRoute("/readings")({
   head: () => ({ meta: [{ title: "القراءات — ميزان" }] }),
@@ -51,125 +33,87 @@ export const Route = createFileRoute("/readings")({
 
 function ReadingsPage() {
   const { user } = useAuth();
-  const isReader = user?.role === "reader";
   const tenantId = user?.tenantId;
+  const isReader = user?.role === "reader";
+  const { items: queue } = useOfflineQueue();
 
   const [customers, setCustomers] = useState<CustomerRow[]>([]);
   const [readings, setReadings] = useState<ReadingRow[]>([]);
-  const [bills, setBills] = useState<BillRow[]>([]);
-  const [meterLinks, setMeterLinks] = useState<{ id: string; number: string; customer_id: string }[]>([]);
-  // العدد الحقيقي في قاعدة البيانات (COUNT(*)) لا طول المصفوفة المحمّلة.
-  const [readingsCount, setReadingsCount] = useState(0);
-  const [billsCount, setBillsCount] = useState(0);
-  const [loading, setLoading] = useState(true);
-  const [offlineSnapshotAt, setOfflineSnapshotAt] = useState<string | null>(null);
-  const { items: queue } = useOfflineQueue();
-
-
+  const [meterLinks, setMeterLinks] = useState<MeterLink[]>([]);
   const [q, setQ] = useState("");
   const [customerId, setCustomerId] = useState<string | null>(null);
   const [meterId, setMeterId] = useState<string | null>(null);
-  const [current, setCurrent] = useState<string>("");
-  const [cameraOpen, setCameraOpen] = useState(false);
+  const [readingDate, setReadingDate] = useState(() => new Date().toISOString().slice(0, 10));
+  const [current, setCurrent] = useState("");
   const [photoBlob, setPhotoBlob] = useState<Blob | null>(null);
-  const [photoPreview, setPhotoPreview] = useState<string | undefined>();
-  const [ocrSerial, setOcrSerial] = useState<string | undefined>();
+  const [photoPreview, setPhotoPreview] = useState<string>();
+  const [ocrSerial, setOcrSerial] = useState<string>();
   const [ocrReading, setOcrReading] = useState<number | null>(null);
-  const [ocrOthers, setOcrOthers] = useState<string[]>([]);
   const [ocrBusy, setOcrBusy] = useState(false);
-  /** لا تُحفظ القراءة قبل ضغط «اعتماد القراءة» من القارئ. */
-  const [readingApproved, setReadingApproved] = useState(false);
-
+  const [cameraOpen, setCameraOpen] = useState(false);
   const [geo, setGeo] = useState<GeoFix | null>(null);
   const [geoBusy, setGeoBusy] = useState(false);
   const [saving, setSaving] = useState(false);
-  const [readingDate, setReadingDate] = useState<string>(() => new Date().toISOString().slice(0, 10));
-  const [tab, setTab] = useState<"input" | "pending" | "log" | "bills">("input");
-
-  const selectedCustomer = customerId ? customers.find((c) => c.id === customerId) ?? null : null;
+  const [loading, setLoading] = useState(true);
+  const [offlineSnapshotAt, setOfflineSnapshotAt] = useState<string | null>(null);
 
   const meterByCustomer = useMemo(() => {
-    const map = new Map<string, { id: string; number: string; customer_id: string }>();
-    meterLinks.forEach((l) => map.set(l.customer_id, l));
-    return map;
+    const m = new Map<string, MeterLink>();
+    for (const link of meterLinks) m.set(link.customer_id, link);
+    return m;
   }, [meterLinks]);
 
-  const meterSerialById = useMemo(() => {
-    const map = new Map<string, string>();
-    meterLinks.forEach((l) => map.set(l.id, l.number));
-    return map;
-  }, [meterLinks]);
-
-  const selectedMeter = meterId ? { id: meterId, number: meterSerialById.get(meterId) ?? "" } : null;
+  const selectedCustomer = customerId ? customers.find(c => c.id === customerId) ?? null : null;
+  const selectedMeter = meterId ? meterLinks.find(m => m.id === meterId) ?? null : null;
   const meterNumber = selectedMeter?.number ?? "";
 
   const lastReading = useMemo(() => {
     if (!meterId) return null;
-    return readings
-      .filter((r) => r.meter_id === meterId && r.status !== "rejected")
-      .sort((a, b) => +new Date(b.created_at) - +new Date(a.created_at))[0] ?? null;
+    return readings.filter(r => r.meter_id === meterId && r.status !== "rejected").sort((a, b) => +new Date(b.created_at) - +new Date(a.created_at))[0] ?? null;
   }, [readings, meterId]);
-
-  const prevReading = lastReading?.current_reading ?? 0;
-  const consumption = current === "" || Number.isNaN(+current) ? 0 : +current - prevReading;
+  const previousReading = lastReading?.current_reading ?? 0;
+  const consumption = current === "" ? 0 : Number(current) - previousReading;
 
   const refresh = useCallback(async () => {
     if (!tenantId) return;
     setLoading(true);
-
-    // بدون شبكة: نعمل من اللقطة المحفوظة محلياً (IndexedDB) بدل شاشة فارغة.
     if (typeof navigator !== "undefined" && !navigator.onLine) {
       const snap = await readFieldCache<FieldCache>(fieldCacheKey(tenantId));
       if (snap) {
         setCustomers(snap.data.customers);
         setReadings(snap.data.readings);
         setMeterLinks(snap.data.meterLinks);
-        setReadingsCount(snap.data.readingsCount);
-        setBillsCount(snap.data.billsCount);
         setOfflineSnapshotAt(snap.savedAt);
       }
       setLoading(false);
       return;
     }
 
-    const [cs, rs, bs, rc, bc, ma] = await Promise.all([
+    const [cs, rs, ma] = await Promise.all([
       supabase.from("customers").select("*").order("name"),
       supabase.from("water_readings").select("*").order("created_at", { ascending: false }).limit(500),
-      supabase.from("water_bills").select("*").order("created_at", { ascending: false }).limit(500),
-      supabase.from("water_readings").select("id", { count: "exact", head: true }),
-      supabase.from("water_bills").select("id", { count: "exact", head: true }),
-      supabase
-        .from("meter_assignments")
-        .select("meter_id, customer_id, ended_at, meters(serial)")
-        .is("ended_at", null),
+      supabase.from("meter_assignments").select("meter_id, customer_id, ended_at, meters(serial)").is("ended_at", null),
     ]);
+
     if (cs.error) toast.error(`تعذّر جلب المشتركين: ${cs.error.message}`);
     else setCustomers(cs.data ?? []);
     if (!rs.error) setReadings(rs.data ?? []);
-    if (!bs.error) setBills(bs.data ?? []);
-    if (!rc.error) setReadingsCount(rc.count ?? 0);
-    if (!bc.error) setBillsCount(bc.count ?? 0);
-    let links: { id: string; number: string; customer_id: string }[] = [];
-    if (!ma.error) {
-      links = (ma.data ?? [])
-        .filter((a) => a.customer_id && a.meter_id)
-        .map((a) => ({
-          id: a.meter_id as string,
-          customer_id: a.customer_id as string,
-          number: ((a as unknown as { meters?: { serial?: string } }).meters?.serial) ?? "",
-        }));
-      setMeterLinks(links);
-    }
 
-    // لقطة صغيرة للعمل الميداني فقط (مشتركون + عدادات + آخر القراءات).
+    const links: MeterLink[] = !ma.error ? (ma.data ?? []).filter(a => a.customer_id && a.meter_id).map(a => ({
+      id: a.meter_id as string,
+      customer_id: a.customer_id as string,
+      number: ((a as unknown as { meters?: { serial?: string } }).meters?.serial) ?? "",
+    })) : [];
+    if (!ma.error) setMeterLinks(links);
+
     if (!cs.error) {
       setOfflineSnapshotAt(null);
       void saveFieldCache<FieldCache>(fieldCacheKey(tenantId), {
         customers: cs.data ?? [],
         readings: (rs.data ?? []).slice(0, 300),
         meterLinks: links,
-        readingsCount: rc.count ?? 0,
-        billsCount: bc.count ?? 0,
+        readingsCount: rs.data?.length ?? 0,
+        billsCount: 0,
       });
       void requestPersistentStorage();
     }
@@ -177,242 +121,31 @@ function ReadingsPage() {
   }, [tenantId]);
 
   useEffect(() => { void refresh(); }, [refresh]);
-
-  // تجهيز موارد OCR المحلية أثناء الاتصال حتى تعمل القراءة أوفلاين لاحقاً.
   useEffect(() => {
-    if (typeof navigator !== "undefined" && navigator.onLine) {
-      void import("@/lib/meter-ocr").then((m) => m.prewarmOcrAssets());
-    }
+    if (typeof navigator !== "undefined" && navigator.onLine) void import("@/lib/meter-ocr").then(m => m.prewarmOcrAssets());
   }, []);
-
-
-  // ── استعادة مسودة القراءة الجارية (تصمد أمام إعادة التحميل/إغلاق التطبيق) ──
-  const [draftLoaded, setDraftLoaded] = useState(false);
-  useEffect(() => {
-    if (!tenantId) return;
-    let cancelled = false;
-    void readReadingDraft(tenantId).then((res) => {
-      if (cancelled) { setDraftLoaded(true); return; }
-      if (res) {
-        const d = res.draft;
-        setCustomerId(d.customerId);
-        setMeterId(d.meterId);
-        setCurrent(d.current);
-        setReadingDate(d.readingDate);
-        if (d.lat != null && d.lng != null) {
-          setGeo({ lat: d.lat, lng: d.lng, accuracy: d.accuracy ?? 0 } as GeoFix);
-        }
-        if (res.photo) {
-          setPhotoBlob(res.photo);
-          setPhotoPreview(URL.createObjectURL(res.photo));
-        }
-        if (d.current || res.photo) toast.info("تمت استعادة قراءة غير محفوظة من هذا الجهاز");
-      }
-      setDraftLoaded(true);
-    });
-    return () => { cancelled = true; };
-  }, [tenantId]);
-
-  // بعد استعادة مسودة، أعد ملء حقل البحث باسم المشترك عند توفر البيانات.
-  useEffect(() => {
-    if (!customerId || q) return;
-    const c = customers.find((x) => x.id === customerId);
-    if (c) setQ(`${c.name}${meterNumber ? " · " + meterNumber : ""}`);
-  }, [customerId, customers, meterNumber, q]);
-
-  // حفظ المسودة محلياً عند أي تغيير (بدون شبكة وبدون فقدان الصورة).
-  useEffect(() => {
-    if (!tenantId || !draftLoaded) return;
-    const empty = !customerId && !current && !photoBlob;
-    const t = setTimeout(() => {
-      if (empty) { void clearReadingDraft(tenantId); return; }
-      void saveReadingDraft(tenantId, {
-        customerId, meterId, current, readingDate,
-        lat: geo?.lat, lng: geo?.lng, accuracy: geo?.accuracy,
-        hasPhoto: !!photoBlob, photoType: photoBlob?.type,
-      }, photoBlob);
-    }, 400);
-    return () => clearTimeout(t);
-  }, [tenantId, draftLoaded, customerId, meterId, current, readingDate, geo, photoBlob]);
-
-
-
-
-  useEffect(() => {
-    if (!tenantId) return;
-    const channel = supabase
-      .channel(`readings-live-${tenantId}`)
-      .on(
-        "postgres_changes",
-        { event: "*", schema: "public", table: "water_readings", filter: `tenant_id=eq.${tenantId}` },
-        (payload) => {
-          if (payload.eventType === "INSERT") setReadingsCount((n) => n + 1);
-          if (payload.eventType === "DELETE") setReadingsCount((n) => Math.max(0, n - 1));
-          setReadings((prev) => {
-            if (payload.eventType === "INSERT") return [payload.new as ReadingRow, ...prev];
-            if (payload.eventType === "UPDATE") {
-              const upd = payload.new as ReadingRow;
-              return prev.map((r) => (r.id === upd.id ? upd : r));
-            }
-            if (payload.eventType === "DELETE") {
-              const old = payload.old as ReadingRow;
-              return prev.filter((r) => r.id !== old.id);
-            }
-            return prev;
-          });
-        },
-      )
-      .on(
-        "postgres_changes",
-        { event: "*", schema: "public", table: "water_bills", filter: `tenant_id=eq.${tenantId}` },
-        (payload) => {
-          if (payload.eventType === "INSERT") setBillsCount((n) => n + 1);
-          if (payload.eventType === "DELETE") setBillsCount((n) => Math.max(0, n - 1));
-          setBills((prev) => {
-            if (payload.eventType === "INSERT") {
-              const b = payload.new as BillRow;
-              toast.success(`صدرت فاتورة جديدة بقيمة ${fmtYER(b.total)}`);
-              return [b, ...prev];
-            }
-            if (payload.eventType === "UPDATE") {
-              const upd = payload.new as BillRow;
-              return prev.map((b) => (b.id === upd.id ? upd : b));
-            }
-            if (payload.eventType === "DELETE") {
-              const old = payload.old as BillRow;
-              return prev.filter((b) => b.id !== old.id);
-            }
-            return prev;
-          });
-        },
-      )
-      .subscribe();
-    return () => { supabase.removeChannel(channel); };
-  }, [tenantId]);
-
-  const pending = useMemo(
-    () => readings.filter((r) => r.status === "pending_approval"),
-    [readings],
-  );
 
   const results = useMemo(() => {
     const query = q.trim().toLowerCase();
-    if (!query) return customers.slice(0, 8);
-    const norm = (v: string) => v.toLowerCase().replace(/[-\s]/g, "");
-    return customers.filter((c) => {
-      if (c.name.toLowerCase().includes(query)) return true;
-      const serial = meterByCustomer.get(c.id)?.number;
-      if (serial && norm(serial).includes(norm(query))) return true;
-      if (c.phone && c.phone.includes(query)) return true;
-      return false;
+    if (!query) return customers.slice(0, 10);
+    const compact = (v: string) => v.toLowerCase().replace(/[\s-]/g, "");
+    return customers.filter(c => {
+      const meter = meterByCustomer.get(c.id)?.number ?? "";
+      return c.name.toLowerCase().includes(query) || compact(meter).includes(compact(query)) || (!!c.phone && c.phone.includes(query));
     }).slice(0, 15);
   }, [q, customers, meterByCustomer]);
 
   function pickCustomer(c: CustomerRow) {
-    const m = meterByCustomer.get(c.id) ?? null;
+    const meter = meterByCustomer.get(c.id);
     setCustomerId(c.id);
-    setMeterId(m?.id ?? null);
-    setQ(`${c.name}${m ? " · " + m.number : ""}`);
-    if (!m) toast.error("لا يوجد عداد مرتبط بهذا المشترك — اربط عداداً من صفحة المشتركين");
-  }
-
-  /**
-   * مسار واحد فقط لقراءة العداد: صورة → Gemini Vision → تحقق رقم العداد → القراءة الحالية.
-   * لا يوجد نموذج ثانٍ ولا OCR محلي متزامن — توفيراً للرصيد ومنعاً لتضارب النتائج.
-   */
-  async function handleCapture(file: File, previewUrl: string) {
-    setPhotoBlob(file);
-    setPhotoPreview(previewUrl);
+    setMeterId(meter?.id ?? null);
+    setCurrent("");
+    setPhotoBlob(null);
+    setPhotoPreview(undefined);
     setOcrSerial(undefined);
     setOcrReading(null);
-    setOcrOthers([]);
-    setReadingApproved(false);
-    setCurrent("");
-
-    if (!selectedMeter) {
-      toast.error("اختر المشترك أولاً — رقم العداد المرتبط مطلوب للتحقق قبل القراءة");
-      return;
-    }
-
-    const online = typeof navigator === "undefined" || navigator.onLine;
-    const prevValue = lastReading?.current_reading ?? null;
-
-    // ── أوفلاين: Tesseract المحلي فقط (بلا أي اتصال بـGemini) ──────────────
-    if (!online) {
-      setOcrBusy(true);
-      try {
-        const { recognizeMeterImage, normalizeSerial } = await import("@/lib/meter-ocr");
-        const res = await recognizeMeterImage(file, {
-          knownMeterNumber: meterNumber || undefined,
-          previousReading: prevValue,
-        });
-        setOcrOthers(res.otherTokens.map((t) => t.text).slice(0, 8));
-        if (res.meterNumberMatch) setOcrSerial(res.meterNumberMatch);
-
-        const serialSeen = res.tokens.find((t) => t.kind === "meter-number");
-        if (meterNumber && !res.meterNumberMatch && serialSeen) {
-          clearPhoto();
-          toast.error(`صورة مرفوضة: رقم العداد في الصورة لا يطابق عداد المشترك (${meterNumber})`);
-          return;
-        }
-        void normalizeSerial;
-
-        if (res.readingValue == null || res.readingAmbiguous) {
-          toast.error("بدون إنترنت: القراءة غير واضحة — أعد التصوير مع تقريب الأرقام داخل الإطار");
-          return;
-        }
-        setOcrReading(res.readingValue);
-        setCurrent(String(res.readingValue));
-        toast.success(`قراءة محلية (بدون إنترنت): ${res.readingValue} — راجعها ثم اعتمدها`);
-      } catch (e) {
-        console.error("Local OCR error:", e);
-        toast.error("تعذّر تشغيل القراءة المحلية — أدخل القراءة يدوياً ثم اعتمدها");
-      } finally {
-        setOcrBusy(false);
-      }
-      return;
-    }
-
-
-    setOcrBusy(true);
-    const prev = lastReading?.current_reading ?? null;
-    try {
-      const [{ imageToCompressedDataUrl }, { readMeterFromImage }] = await Promise.all([
-        import("@/lib/meter-ocr"),
-        import("@/lib/meter-vision.functions"),
-      ]);
-      const imageDataUrl = await imageToCompressedDataUrl(file, 1600, 0.92);
-      const ai = await readMeterFromImage({
-        data: { imageDataUrl, knownMeterNumber: meterNumber || undefined, previousReading: prev },
-      });
-
-      if (ai.meterNumber) setOcrSerial(ai.meterNumber);
-      setOcrOthers(ai.otherNumbers.slice(0, 8));
-
-      // 1) التحقق من رقم العداد قبل أي استخراج للقراءة.
-      if (meterNumber && ai.serialMatch === "mismatch") {
-        clearPhoto();
-        toast.error(
-          `صورة مرفوضة: رقم العداد في الصورة (${ai.meterNumber ?? "—"}) لا يطابق عداد المشترك (${meterNumber}) — أعد تصوير العداد الصحيح`,
-        );
-        return;
-      }
-
-      // 2) لا تخمين: قراءة غير مؤكدة = رفض وطلب إعادة تصوير.
-      if (ai.readingValue == null || ai.ambiguous) {
-        toast.error("القراءة غير واضحة في الصورة — أعد التصوير مع تقريب الأرقام داخل الإطار");
-        return;
-      }
-
-      setOcrReading(ai.readingValue);
-      setCurrent(String(ai.readingValue));
-      toast.success(`تم استخراج القراءة: ${ai.readingValue} — راجعها ثم اضغط «اعتماد القراءة»`);
-    } catch (e) {
-      console.error("Meter vision error:", e);
-      toast.error("تعذّر تحليل صورة العداد — أعد المحاولة أو أعد التصوير");
-    } finally {
-      setOcrBusy(false);
-    }
+    setCameraOpen(false);
+    if (!meter) toast.error("لا يوجد عداد مرتبط بهذا المشترك");
   }
 
   function clearPhoto() {
@@ -420,62 +153,121 @@ function ReadingsPage() {
     setPhotoPreview(undefined);
     setOcrSerial(undefined);
     setOcrReading(null);
-    setOcrOthers([]);
-    setReadingApproved(false);
     setCurrent("");
   }
 
+  async function handleCapture(file: File, previewUrl: string) {
+    if (!selectedMeter || !meterNumber) {
+      toast.error("اختر المشترك والعداد المرتبط أولاً");
+      return;
+    }
+    setPhotoBlob(file);
+    setPhotoPreview(previewUrl);
+    setOcrSerial(undefined);
+    setOcrReading(null);
+    setCurrent("");
+    setOcrBusy(true);
+    const previous = lastReading?.current_reading ?? null;
 
+    try {
+      if (typeof navigator !== "undefined" && !navigator.onLine) {
+        const { recognizeMeterImage } = await import("@/lib/meter-ocr");
+        const res = await recognizeMeterImage(file, { knownMeterNumber: meterNumber, previousReading: previous });
+        if (!res.meterNumberMatch || normalizeSerial(res.meterNumberMatch) !== normalizeSerial(meterNumber)) {
+          clearPhoto();
+          toast.error(`عذراً، هذه الصورة ليست للعداد المرتبط (${meterNumber}). أعد تصوير العداد الصحيح.`);
+          return;
+        }
+        if (res.readingValue == null || res.readingAmbiguous) {
+          toast.error("عذراً، تعذر استخراج قراءة واضحة. أعد التصوير مع تقريب شاشة العداد.");
+          return;
+        }
+        setOcrSerial(res.meterNumberMatch);
+        setOcrReading(res.readingValue);
+        setCurrent(String(res.readingValue));
+        toast.success(`تم التحقق من العداد واستخراج القراءة: ${res.readingValue}`);
+        return;
+      }
+
+      const [{ fileToDataUrl }, { readMeterFromImage }] = await Promise.all([
+        import("@/lib/meter-ocr"),
+        import("@/lib/meter-vision.functions"),
+      ]);
+      // نرسل الأصل كما هو للتحليل؛ لا resize ولا JPEG recompression.
+      const ai = await readMeterFromImage({ data: {
+        imageDataUrl: await fileToDataUrl(file),
+        knownMeterNumber: meterNumber,
+        previousReading: previous,
+      }});
+      if (ai.serialMatch !== "match" || !ai.meterNumber || normalizeSerial(ai.meterNumber) !== normalizeSerial(meterNumber)) {
+        clearPhoto();
+        toast.error(`عذراً، هذه الصورة ليست للعداد المرتبط (${meterNumber}). أعد تصوير العداد الصحيح.`);
+        return;
+      }
+      if (ai.readingValue == null || ai.ambiguous) {
+        toast.error("عذراً، تعذر استخراج قراءة واضحة. أعد التصوير مع تقريب شاشة العداد.");
+        return;
+      }
+      setOcrSerial(ai.meterNumber);
+      setOcrReading(ai.readingValue);
+      setCurrent(String(ai.readingValue));
+      toast.success(`تم التحقق من العداد واستخراج القراءة: ${ai.readingValue}`);
+    } catch (e) {
+      console.error("Meter image verification failed", e);
+      clearPhoto();
+      toast.error((e as Error).message || "تعذر تحليل صورة العداد. أعد التصوير.");
+    } finally {
+      setOcrBusy(false);
+    }
+  }
 
   async function captureGeo() {
     setGeoBusy(true);
     try {
       const fix = await getGeoFix();
       setGeo(fix);
-      toast.success(`تم تحديد الموقع (${fix.accuracy.toFixed(0)} م)`);
+      toast.success(`تم تحديد الموقع بدقة ${fix.accuracy.toFixed(0)} م`);
     } catch (e) {
       toast.error(`فشل تحديد الموقع: ${(e as Error).message}`);
     } finally { setGeoBusy(false); }
   }
 
-  function resetForm() {
-    if (tenantId) void clearReadingDraft(tenantId);
-    setCurrent(""); setPhotoBlob(null); setPhotoPreview(undefined);
-    setOcrSerial(undefined); setOcrReading(null); setOcrOthers([]); setGeo(null);
-    setReadingApproved(false);
+  function resetAfterSave() {
+    setCurrent("");
+    setPhotoBlob(null);
+    setPhotoPreview(undefined);
+    setOcrSerial(undefined);
+    setOcrReading(null);
+    setGeo(null);
+    setCameraOpen(false);
     setReadingDate(new Date().toISOString().slice(0, 10));
   }
 
   async function saveReading() {
     if (!tenantId || !user) return toast.error("لا توجد جلسة نشطة");
-    if (!selectedCustomer) return toast.error("اختر مشتركاً");
+    if (!selectedCustomer) return toast.error("اختر المشترك");
     if (!selectedMeter) return toast.error("لا يوجد عداد مرتبط بهذا المشترك");
-    if (current === "" || Number.isNaN(+current)) return toast.error("صوّر العداد لاستخراج القراءة الحالية");
-    if (!readingApproved) return toast.error("اضغط «اعتماد القراءة» قبل الحفظ");
-
-    if (ocrSerial &&
-        ocrSerial.replace(/[-\s]/g, "").toUpperCase() !==
-        meterNumber.replace(/[-\s]/g, "").toUpperCase()) {
-      return toast.error(`رفض: رقم العداد الملتقط (${ocrSerial}) لا يطابق (${meterNumber})`);
-    }
+    if (!photoBlob || !photoPreview) return toast.error("يجب تصوير العداد أولاً");
+    if (ocrReading == null || current === "" || Number.isNaN(Number(current))) return toast.error("يجب استخراج القراءة تلقائياً من صورة مطابقة للعداد");
+    if (normalizeSerial(ocrSerial ?? "") !== normalizeSerial(meterNumber)) return toast.error("رفض الحفظ: رقم العداد في الصورة غير مطابق");
+    if (Number(current) !== ocrReading) return toast.error("رفض الحفظ: القراءة الحالية يجب أن تكون القراءة المستخرجة من الصورة");
+    if (Number(current) < previousReading) return toast.error(`رفض الحفظ: القراءة الحالية أقل من السابقة (${previousReading})`);
 
     let fix = geo;
     if (!fix && isReader) {
-      try { fix = await getGeoFix(); setGeo(fix); }
-      catch (e) { return toast.error(`الموقع مطلوب للقارئ: ${(e as Error).message}`); }
+      try { fix = await getGeoFix(); setGeo(fix); } catch (e) { return toast.error(`الموقع مطلوب للقارئ: ${(e as Error).message}`); }
     }
 
     setSaving(true);
     const clientUuid = crypto.randomUUID();
     try {
-
       if (typeof navigator !== "undefined" && !navigator.onLine) {
         await addPending({
           clientId: clientUuid,
           meterId: selectedMeter.id,
           meterNumber: selectedMeter.number,
-          customerId: customerId!,
-          current: +current,
+          customerId: selectedCustomer.id,
+          current: Number(current),
           readingDate,
           by: user.userId,
           latitude: fix?.lat,
@@ -483,490 +275,107 @@ function ReadingsPage() {
           accuracy: fix?.accuracy,
           tenantId,
         }, photoBlob);
-        toast.success("لا يوجد اتصال — حُفظت القراءة والصورة محلياً وسترسل تلقائياً عند عودة الشبكة");
-        resetForm();
+        toast.success("حُفظت القراءة والصورة محلياً وستتم المزامنة تلقائياً عند عودة الاتصال");
+        resetAfterSave();
         return;
       }
 
-      let photoUrl: string | null = null;
-      if (photoBlob) {
-        const path = `tenants/${tenantId}/readings/${crypto.randomUUID()}.jpg`;
-        const up = await supabase.storage
-          .from("meter-readings")
-          .upload(path, photoBlob, { contentType: photoBlob.type, upsert: false });
-        if (up.error) throw new Error(`رفع الصورة فشل: ${up.error.message}`);
-        photoUrl = path;
-      }
+      const extension = extensionFor(photoBlob.type);
+      const path = `tenants/${tenantId}/readings/${clientUuid}.${extension}`;
+      const up = await supabase.storage.from("meter-readings").upload(path, photoBlob, { contentType: photoBlob.type, upsert: false });
+      if (up.error) throw new Error(`رفع الصورة فشل: ${up.error.message}`);
 
       const { error } = await supabase.from("water_readings").insert({
         tenant_id: tenantId,
-        customer_id: customerId!,
+        customer_id: selectedCustomer.id,
         meter_id: selectedMeter.id,
-        current_reading: +current,
+        current_reading: Number(current),
         reading_date: readingDate,
         client_uuid: clientUuid,
         reader_id: user.userId,
-        photo_url: photoUrl,
+        photo_url: path,
         lat: fix?.lat ?? null,
         lng: fix?.lng ?? null,
         gps_verified: !!fix,
       } as Database["public"]["Tables"]["water_readings"]["Insert"]);
 
       if (error) {
-        if (error.code === "23505" && /one_per_meter_day/.test(error.message)) {
-          throw new Error("توجد قراءة مسجلة لهذا العداد في نفس التاريخ");
-        }
+        await supabase.storage.from("meter-readings").remove([path]).catch(() => undefined);
+        if (error.code === "23505" && /one_per_meter_day|client_uuid/i.test(error.message)) throw new Error("توجد قراءة مسجلة لهذا العداد في هذا التاريخ");
         throw new Error(error.message);
       }
-
-      toast.success("تم حفظ القراءة — يجري إصدار الفاتورة تلقائياً");
-      resetForm();
+      toast.success("تم حفظ القراءة والصورة الأصلية بنجاح");
+      resetAfterSave();
+      await refresh();
     } catch (e) {
-      // انقطاع الشبكة أثناء الحفظ أو رفع الصورة → لا تضيع القراءة: تُحفظ في الطابور.
       if (isNetworkError(e)) {
         try {
-          await addPending({
-            clientId: clientUuid,
-            meterId: selectedMeter.id,
-            meterNumber: selectedMeter.number,
-            customerId: customerId!,
-            current: +current,
-            readingDate,
-            by: user.userId,
-            latitude: fix?.lat,
-            longitude: fix?.lng,
-            accuracy: fix?.accuracy,
-            tenantId,
-          }, photoBlob);
-          toast.warning("انقطع الاتصال أثناء الحفظ — حُفظت القراءة والصورة محلياً وسترسل تلقائياً");
-          resetForm();
+          await addPending({ clientId: clientUuid, meterId: selectedMeter.id, meterNumber: selectedMeter.number, customerId: selectedCustomer.id, current: Number(current), readingDate, by: user.userId, latitude: fix?.lat, longitude: fix?.lng, accuracy: fix?.accuracy, tenantId }, photoBlob);
+          toast.warning("انقطع الاتصال — حُفظت القراءة والصورة محلياً للمزامنة التلقائية");
+          resetAfterSave();
           return;
         } catch {
-          toast.error("تعذّر الحفظ محلياً — لا تغلق الصفحة وحاول مرة أخرى");
+          toast.error("تعذر الحفظ المحلي؛ أعد المحاولة قبل مغادرة الصفحة");
           return;
         }
       }
-      toast.error((e as Error).message);
+      toast.error((e as Error).message || "تعذر حفظ القراءة");
     } finally { setSaving(false); }
   }
 
-  async function approve(id: string) {
-    const { error } = await supabase.rpc("approve_reading", { _reading_id: id });
-    if (error) return toast.error("فشل الاعتماد: " + error.message);
-    toast.success("تم الاعتماد — ستصدر الفاتورة تلقائياً");
-  }
-
-  async function reject(id: string) {
-    const reason = window.prompt("سبب الرفض؟") ?? undefined;
-    const { error } = await (supabase as unknown as {
-      rpc: (fn: string, args: Record<string, unknown>) => Promise<{ error: { message: string } | null }>;
-    }).rpc("reject_reading", { _reading_id: id, _reason: reason ?? null });
-    if (error) {
-      return toast.error(
-        /already has payments/.test(error.message)
-          ? "تعذّر الرفض: الفاتورة عليها دفعات مسجلة"
-          : "فشل الرفض: " + error.message,
-      );
-    }
-    toast.info("تم الرفض وإلغاء الفاتورة المرتبطة");
-    void refresh();
-  }
-
-  const photoSignedUrl = useCallback(async (path: string | null): Promise<string | null> => {
-    if (!path) return null;
-    const { data } = await supabase.storage.from("meter-readings").createSignedUrl(path, 600);
-    return data?.signedUrl ?? null;
-  }, []);
-
   return (
     <div className="space-y-6">
-      <div className="flex justify-between items-start">
+      <div className="flex items-start justify-between gap-3">
         <div>
           <h1 className="text-2xl md:text-3xl font-bold">القراءات</h1>
-          <p className="text-sm text-muted-foreground mt-1">
-            بيانات حية — يتم رفع الصور إلى مخزن معزول للمشروع وحساب الفواتير تلقائياً على السيرفر
-          </p>
+          <p className="text-sm text-muted-foreground mt-1">الصورة الأصلية محفوظة دون ضغط، ولا تُقبل القراءة إلا بعد التحقق التام من رقم العداد.</p>
         </div>
-        <Button size="sm" variant="outline" onClick={refresh} disabled={loading}>
-          <RefreshCw className={`w-4 h-4 ms-1 ${loading ? "animate-spin" : ""}`} /> تحديث
-        </Button>
+        <Button size="sm" variant="outline" onClick={() => void refresh()} disabled={loading}><RefreshCw className={`w-4 h-4 ms-1 ${loading ? "animate-spin" : ""}`} /> تحديث</Button>
       </div>
 
-      {offlineSnapshotAt && (
-        <div className="rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-700">
-          وضع الأوفلاين — البيانات المعروضة لقطة محلية محفوظة بتاريخ{" "}
-          {new Date(offlineSnapshotAt).toLocaleString("ar")}. يمكنك تسجيل القراءات وستُرسل عند عودة الشبكة.
-        </div>
-      )}
+      {offlineSnapshotAt && <div className="rounded-md border px-3 py-2 text-xs bg-amber-500/10">وضع الأوفلاين — البيانات من لقطة محلية محفوظة بتاريخ {new Date(offlineSnapshotAt).toLocaleString("ar")}.</div>}
 
-      <div className="flex gap-2 flex-wrap">
-        <Button size="sm" variant={tab === "input" ? "default" : "outline"} onClick={() => setTab("input")}>إدخال</Button>
-        {!isReader && (
-          <Button size="sm" variant={tab === "pending" ? "default" : "outline"} onClick={() => setTab("pending")}>
-            بانتظار الاعتماد {pending.length > 0 && <Badge className="ms-1" variant="secondary">{pending.length}</Badge>}
+      <Card>
+        <CardHeader><CardTitle>تسجيل قراءة</CardTitle></CardHeader>
+        <CardContent className="space-y-4">
+          <div>
+            <Label>المشترك</Label>
+            <Input value={q} onChange={e => { setQ(e.target.value); if (customerId) { setCustomerId(null); setMeterId(null); clearPhoto(); } }} placeholder="الاسم / رقم العداد / الهاتف" />
+            {q && !selectedCustomer && <div className="mt-2 border rounded-md divide-y max-h-64 overflow-auto">{results.length === 0 ? <div className="p-3 text-sm text-muted-foreground text-center">لا توجد نتائج</div> : results.map(c => <button key={c.id} type="button" onClick={() => { pickCustomer(c); setQ(`${c.name} · ${meterByCustomer.get(c.id)?.number ?? "بدون عداد"}`); }} className="w-full text-right p-3 hover:bg-muted/50 text-sm flex justify-between gap-3"><span className="font-medium">{c.name}</span><span className="text-xs text-muted-foreground" dir="ltr">{meterByCustomer.get(c.id)?.number ?? "بدون عداد"} · {c.phone ?? "—"}</span></button>)}</div>}
+          </div>
+
+          {selectedCustomer && <div className="rounded-lg border p-3 bg-muted/30 grid grid-cols-2 md:grid-cols-4 gap-3 text-xs"><Info label="الاسم">{selectedCustomer.name}</Info><Info label="الهاتف"><span dir="ltr">{selectedCustomer.phone ?? "—"}</span></Info><Info label="القراءة السابقة"><span className="font-mono">{previousReading}</span></Info><Info label="الرصيد">{fmtYER(selectedCustomer.balance)}</Info></div>}
+
+          <div className="grid md:grid-cols-2 gap-3">
+            <div><Label>رقم العداد المرتبط</Label><Input value={meterNumber} readOnly dir="ltr" className="font-mono bg-muted/40" placeholder="يظهر بعد اختيار المشترك" /></div>
+            <div><Label>القراءة الحالية</Label><Input type="number" value={current} readOnly aria-readonly placeholder={ocrBusy ? "جاري استخراج القراءة…" : "تُملأ تلقائياً بعد نجاح التحقق"} className="bg-muted/40" /></div>
+          </div>
+
+          <div className="flex flex-wrap gap-2">
+            <Button variant="outline" onClick={() => setCameraOpen(v => !v)} disabled={!selectedMeter || ocrBusy}><Camera className="w-4 h-4 ms-1" /> {cameraOpen ? "إخفاء الكاميرا" : "تصوير العداد"}</Button>
+            <Button variant="outline" onClick={() => void captureGeo()} disabled={geoBusy}><MapPin className="w-4 h-4 ms-1" /> {geo ? "تم تحديد الموقع" : "تحديد الموقع"}</Button>
+          </div>
+
+          {cameraOpen && <MeterCamera onCapture={handleCapture} onClear={clearPhoto} initialPreview={photoPreview} disabled={ocrBusy || saving} />}
+
+          {ocrBusy && <div className="rounded-lg border p-3 flex items-center gap-2 text-sm"><Loader2 className="w-4 h-4 animate-spin" /> جارٍ التحقق من رقم العداد واستخراج القراءة…</div>}
+          {ocrSerial && <div className="rounded-lg border border-emerald-500/40 bg-emerald-500/5 p-3 flex items-center gap-2 text-sm"><ShieldCheck className="w-4 h-4" /> رقم العداد مطابق تماماً: <span className="font-mono" dir="ltr">{ocrSerial}</span></div>}
+          {ocrReading != null && <div className="rounded-lg border p-3 grid grid-cols-3 gap-3 text-sm"><Info label="القراءة المستخرجة"><span className="font-mono">{ocrReading}</span></Info><Info label="السابقة"><span className="font-mono">{previousReading}</span></Info><Info label="الاستهلاك"><span className="font-mono">{consumption.toFixed(1)} م³</span></Info></div>}
+          {photoPreview && <div className="flex items-center gap-2 text-xs"><Badge variant="outline"><ImageIcon className="w-3 h-3 ms-1" /> الصورة الأصلية جاهزة</Badge><img src={photoPreview} alt="معاينة صورة العداد" className="h-20 rounded border object-contain" /></div>}
+
+          <div><Label>تاريخ القراءة</Label><Input type="date" dir="ltr" value={readingDate} max={new Date().toISOString().slice(0, 10)} onChange={e => setReadingDate(e.target.value)} /></div>
+
+          <Button size="lg" onClick={() => void saveReading()} disabled={saving || ocrBusy || !photoBlob || ocrReading == null || !selectedMeter || !selectedCustomer} className="w-full md:w-auto">
+            {saving ? <><Loader2 className="w-4 h-4 ms-1 animate-spin" /> جاري الحفظ…</> : <><CheckCircle2 className="w-4 h-4 ms-1" /> حفظ القراءة</>}
           </Button>
-        )}
-        {!isReader && (
-          <Button size="sm" variant={tab === "log" ? "default" : "outline"} onClick={() => setTab("log")}>
-            سجل القراءات
-          </Button>
-        )}
-        <Button size="sm" variant={tab === "bills" ? "default" : "outline"} onClick={() => setTab("bills")}>
-          الفواتير الحية {billsCount > 0 && <Badge className="ms-1" variant="secondary">{billsCount}</Badge>}
-        </Button>
-      </div>
+        </CardContent>
+      </Card>
 
-      {tab === "input" && (
-        <Card>
-          <CardHeader className="flex flex-row items-center justify-between">
-            <CardTitle>تسجيل قراءة</CardTitle>
-            <div className="flex gap-2">
-              <Button size="sm" variant="outline" onClick={captureGeo} disabled={geoBusy}>
-                <MapPin className="w-4 h-4 ms-1" /> {geo ? "✓ موقع مسبق" : "تحديد الموقع"}
-              </Button>
-              <Button size="sm" variant="outline" onClick={() => setCameraOpen((v) => !v)}>
-                <Camera className="w-4 h-4 ms-1" /> {cameraOpen ? "إخفاء الكاميرا" : "تصوير العداد"}
-              </Button>
-            </div>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            <div>
-              <Label className="mb-1 block">بحث عن المشترك (الاسم / رقم العداد / الهاتف)</Label>
-              <Input value={q} onChange={(e) => { setQ(e.target.value); setCustomerId(null); }} placeholder="ابدأ الكتابة…" />
-              {q && !selectedCustomer && (
-                <div className="mt-2 border rounded-md divide-y max-h-64 overflow-auto">
-                  {results.length === 0 && <div className="p-3 text-sm text-muted-foreground text-center">لا نتائج</div>}
-                  {results.map((c) => (
-                    <button key={c.id} type="button" onClick={() => pickCustomer(c)}
-                      className="w-full text-right p-2 hover:bg-muted/50 text-sm flex justify-between items-center gap-3">
-                      <span className="font-medium">{c.name}</span>
-                      <span className="text-xs text-muted-foreground font-mono" dir="ltr">
-                        {meterByCustomer.get(c.id)?.number ?? "بدون عداد"} · {c.phone ?? "—"}
-                      </span>
-                    </button>
-                  ))}
-                </div>
-              )}
-            </div>
-
-            {selectedCustomer && (
-              <div className="rounded-lg border p-3 bg-muted/30 grid grid-cols-2 md:grid-cols-4 gap-3 text-xs">
-                <Info label="الاسم">{selectedCustomer.name}</Info>
-                <Info label="الهاتف"><span dir="ltr">{selectedCustomer.phone ?? "—"}</span></Info>
-                <Info label="القراءة السابقة"><span className="font-mono">{lastReading?.current_reading ?? 0}</span></Info>
-                <Info label="الرصيد">{fmtYER(selectedCustomer.balance)}</Info>
-              </div>
-            )}
-
-            <div className="grid md:grid-cols-2 gap-3">
-              <div>
-                <Label>رقم العداد</Label>
-                <Input value={meterNumber} readOnly dir="ltr" className="font-mono bg-muted/40"
-                  placeholder="يُحدَّد تلقائياً من العداد المرتبط بالمشترك" />
-              </div>
-              <div>
-                <Label>القراءة الحالية</Label>
-                <Input
-                  type="number" value={current}
-                  onChange={(e) => { setCurrent(e.target.value); setReadingApproved(false); }}
-                  placeholder={ocrBusy ? "جاري استخراج القراءة من الصورة…" : "تُملأ تلقائياً بعد تصوير العداد"}
-                />
-              </div>
-            </div>
-
-            {/* الاستهلاك المحسوب تلقائياً من السابقة والحالية */}
-            {current !== "" && !Number.isNaN(+current) && (
-              <div className="rounded-lg border p-3 bg-muted/30 grid grid-cols-3 gap-3 text-xs">
-                <Info label="القراءة السابقة"><span className="font-mono">{prevReading}</span></Info>
-                <Info label="القراءة الحالية"><span className="font-mono">{+current}</span></Info>
-                <Info label="الاستهلاك">
-                  <span className={`font-mono ${consumption < 0 ? "text-destructive" : ""}`}>
-                    {consumption.toFixed(1)} م³
-                  </span>
-                </Info>
-              </div>
-            )}
-
-            {/* موافقة القارئ — لا حفظ قبل الاعتماد */}
-            {current !== "" && !Number.isNaN(+current) && !readingApproved && (
-              <div className="flex flex-wrap gap-2 items-center rounded-lg border border-emerald-500/40 bg-emerald-500/5 p-3">
-                <span className="text-xs">راجع القراءة المستخرجة ثم اعتمدها، أو أعد التصوير إذا كانت غير صحيحة.</span>
-                <Button size="sm" onClick={() => { setReadingApproved(true); toast.success("تم اعتماد القراءة — يمكنك الحفظ الآن"); }}>
-                  <Check className="w-3 h-3 ms-1" /> اعتماد القراءة
-                </Button>
-                <Button size="sm" variant="outline" onClick={() => { clearPhoto(); setCameraOpen(true); }}>
-                  <Camera className="w-3 h-3 ms-1" /> إعادة التصوير
-                </Button>
-              </div>
-            )}
-
-
-            <div className="grid md:grid-cols-2 gap-3">
-              <div>
-                <Label>تاريخ القراءة</Label>
-                <Input
-                  type="date" dir="ltr" value={readingDate}
-                  max={new Date().toISOString().slice(0, 10)}
-                  onChange={(e) => setReadingDate(e.target.value)}
-                />
-                <p className="text-[11px] text-muted-foreground mt-1">
-                  القراءات بأثر رجعي تُحفظ بانتظار اعتماد المدير.
-                </p>
-              </div>
-            </div>
-
-            <Button onClick={saveReading} size="lg" disabled={saving || geoBusy || ocrBusy || !readingApproved} className="w-full md:w-auto">
-              {saving ? <><Loader2 className="w-4 h-4 ms-1 animate-spin" /> جاري الحفظ…</> : "حفظ القراءة"}
-            </Button>
-
-            {(photoPreview || ocrSerial || ocrBusy || ocrReading != null || geo) && (
-              <div className="flex flex-wrap gap-2 text-xs items-center">
-                {photoPreview && (
-                  <>
-                    <Badge variant="outline" className="gap-1"><ImageIcon className="w-3 h-3" /> صورة جاهزة</Badge>
-                    <img src={photoPreview} alt="preview" className="h-16 rounded border" />
-                  </>
-                )}
-                {ocrBusy && (
-                  <Badge variant="secondary" className="gap-1">
-                    <Loader2 className="w-3 h-3 animate-spin" /> جاري قراءة الصورة…
-                  </Badge>
-                )}
-                {ocrSerial && (() => {
-                  const ok = ocrSerial.replace(/[-\s]/g, "").toUpperCase() ===
-                    meterNumber.replace(/[-\s]/g, "").toUpperCase();
-                  return (
-                    <Badge variant={ok ? "default" : "destructive"} className="gap-1">
-                      <ShieldAlert className="w-3 h-3" />
-                      {ok ? "رقم العداد مطابق" : "رقم العداد غير مطابق"}: {ocrSerial}
-                    </Badge>
-                  );
-                })()}
-                {ocrReading != null && (
-                  <>
-                    <Badge variant="outline" className="gap-1">
-                      قراءة مقترحة من الصورة: <span className="font-mono" dir="ltr">{ocrReading}</span>
-                    </Badge>
-                    <Button type="button" size="sm" variant="outline"
-                      onClick={() => setCurrent(String(ocrReading))}>
-                      استخدام القراءة المقترحة
-                    </Button>
-                  </>
-                )}
-                {ocrOthers.length > 0 && (
-                  <Badge variant="secondary" className="gap-1" dir="ltr">
-                    أرقام أخرى: {ocrOthers.join(" · ")}
-                  </Badge>
-                )}
-                {geo && <Badge variant="outline" className="gap-1"><MapPin className="w-3 h-3" /> {geo.lat.toFixed(4)}, {geo.lng.toFixed(4)}</Badge>}
-              </div>
-            )}
-
-          </CardContent>
-        </Card>
-      )}
-
-      {tab === "input" && queue.length > 0 && (
-        <Card>
-          <CardHeader className="flex flex-row items-center justify-between">
-            <CardTitle className="text-base">
-              القراءات المحفوظة على الجهاز ({queue.filter(isUnsynced).length} بانتظار المزامنة)
-            </CardTitle>
-            <Button size="sm" variant="outline" onClick={() => void syncPending(true)}>
-              <RefreshCw className="w-3 h-3 ms-1" /> مزامنة الآن
-            </Button>
-          </CardHeader>
-          <CardContent className="space-y-2">
-            {queue.map((p) => (
-              <div key={p.clientId} className="flex flex-wrap items-center justify-between gap-2 rounded-md border p-2 text-xs">
-                <div className="space-y-0.5">
-                  <div className="font-semibold">
-                    عداد <span className="font-mono" dir="ltr">{p.meterNumber || "—"}</span> · قراءة{" "}
-                    <span className="font-mono">{p.current}</span>
-                  </div>
-                  <div className="text-muted-foreground">
-                    {new Date(p.createdAt).toLocaleString("ar")}
-                    {p.hasPhoto || p.photoPath ? " · صورة محفوظة" : " · بدون صورة"}
-                    {p.attempts > 0 ? ` · محاولات: ${p.attempts}` : ""}
-                  </div>
-                  {p.lastError && <div className="text-destructive">{p.lastError}</div>}
-                </div>
-                <div className="flex items-center gap-2">
-                  <Badge
-                    variant={
-                      p.status === "synced" ? "default" : p.status === "failed" ? "destructive" : "secondary"
-                    }
-                  >
-                    {QUEUE_LABEL[p.status]}
-                  </Badge>
-                  {p.status === "failed" && (
-                    <Button size="sm" variant="outline" className="h-7"
-                      onClick={() => void retryPending(p.clientId)}>
-                      <RefreshCw className="w-3 h-3 ms-1" /> إعادة المحاولة
-                    </Button>
-                  )}
-                </div>
-              </div>
-            ))}
-          </CardContent>
-        </Card>
-      )}
-
-      {tab === "input" && cameraOpen && (
-        <Card>
-          <CardHeader><CardTitle>صورة العداد</CardTitle></CardHeader>
-          <CardContent>
-            <MeterCamera
-              onCapture={handleCapture}
-              onClear={clearPhoto}
-              initialPreview={photoPreview}
-            />
-          </CardContent>
-        </Card>
-      )}
-
-      {tab === "pending" && !isReader && (
-        <Card>
-          <CardHeader><CardTitle>قراءات بانتظار الاعتماد ({pending.length})</CardTitle></CardHeader>
-          <CardContent className="p-4 space-y-3">
-            {pending.length === 0 && <p className="text-sm text-muted-foreground text-center py-6">لا يوجد قراءات معلقة</p>}
-            {pending.map((r) => {
-              const c = customers.find((x) => x.id === r.customer_id);
-              return (
-                <div key={r.id} className="rounded-lg border p-3 grid md:grid-cols-[1fr_auto] gap-3 items-start">
-                  <div className="text-xs space-y-1">
-                    <div className="text-sm font-semibold">{c?.name ?? "—"} — <span className="font-mono">{meterSerialById.get(r.meter_id ?? "") ?? "—"}</span></div>
-                    <div className="text-muted-foreground">
-                      قراءة {r.previous} → <span className="text-foreground font-mono">{r.current_reading}</span> · استهلاك {r.consumption}
-                    </div>
-                    <div className="flex gap-2 flex-wrap text-[11px] text-muted-foreground">
-                      {r.lat != null && r.lng != null && (
-                        <a className="underline hover:text-primary" href={`https://maps.google.com/?q=${r.lat},${r.lng}`} target="_blank" rel="noreferrer">
-                          <MapPin className="inline w-3 h-3" /> {r.lat.toFixed(4)}, {r.lng.toFixed(4)}
-                        </a>
-                      )}
-                      <span>{new Date(r.created_at).toLocaleString("ar")}</span>
-                      {r.photo_url && <PhotoLink path={r.photo_url} loader={photoSignedUrl} />}
-                    </div>
-                  </div>
-                  <div className="flex md:flex-col gap-2">
-                    <Button size="sm" onClick={() => approve(r.id)}>
-                      <Check className="w-3 h-3 ms-1" /> اعتماد
-                    </Button>
-                    <Button size="sm" variant="destructive" onClick={() => reject(r.id)}>
-                      <X className="w-3 h-3 ms-1" /> رفض
-                    </Button>
-                  </div>
-                </div>
-              );
-            })}
-          </CardContent>
-        </Card>
-      )}
-
-      {tab === "log" && !isReader && (
-        <Card>
-          <CardHeader><CardTitle>سجل القراءات ({readingsCount})</CardTitle></CardHeader>
-          <CardContent className="p-4 overflow-auto">
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead className="text-right">التاريخ</TableHead>
-                  <TableHead className="text-right">العداد</TableHead>
-                  <TableHead className="text-right">المشترك</TableHead>
-                  <TableHead className="text-right">السابقة</TableHead>
-                  <TableHead className="text-right">الحالية</TableHead>
-                  <TableHead className="text-right">الاستهلاك</TableHead>
-                  <TableHead className="text-right">الحالة</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {readings.slice(0, 200).map((r) => {
-                  const c = customers.find((x) => x.id === r.customer_id);
-                  return (
-                    <TableRow key={r.id}>
-                      <TableCell className="text-xs">{new Date(r.created_at).toLocaleDateString("ar-EG")}</TableCell>
-                      <TableCell className="font-mono">{meterSerialById.get(r.meter_id ?? "") ?? "—"}</TableCell>
-                      <TableCell>{c?.name ?? "—"}</TableCell>
-                      <TableCell>{r.previous}</TableCell>
-                      <TableCell>{r.current_reading}</TableCell>
-                      <TableCell className="font-semibold">{r.consumption}</TableCell>
-                      <TableCell>
-                        {r.status === "pending_approval" ? (
-                          <Badge variant="secondary">معلقة</Badge>
-                        ) : r.status === "rejected" ? (
-                          <Badge variant="destructive"><X className="w-3 h-3 ms-1" /> مرفوضة</Badge>
-                        ) : r.flag === "suspicious" ? (
-                          <Badge variant="secondary" className="gap-1"><AlertCircle className="w-3 h-3" /> مشبوهة</Badge>
-                        ) : (
-                          <Badge variant="outline" className="gap-1"><CheckCircle2 className="w-3 h-3" /> معتمدة</Badge>
-                        )}
-                      </TableCell>
-                    </TableRow>
-                  );
-                })}
-              </TableBody>
-            </Table>
-          </CardContent>
-        </Card>
-      )}
-
-      {tab === "bills" && (
-        <Card>
-          <CardHeader><CardTitle>الفواتير الحية ({billsCount})</CardTitle></CardHeader>
-          <CardContent className="p-4 overflow-auto">
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead className="text-right">التاريخ</TableHead>
-                  <TableHead className="text-right">المشترك</TableHead>
-                  <TableHead className="text-right">الاستهلاك</TableHead>
-                  <TableHead className="text-right">متأخرات</TableHead>
-                  <TableHead className="text-right">الإجمالي</TableHead>
-                  <TableHead className="text-right">مدفوع</TableHead>
-                  <TableHead className="text-right">الحالة</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {bills.slice(0, 200).map((b) => {
-                  const c = customers.find((x) => x.id === b.customer_id);
-                  return (
-                    <TableRow key={b.id}>
-                      <TableCell className="text-xs">{new Date(b.created_at).toLocaleDateString("ar-EG")}</TableCell>
-                      <TableCell>{c?.name ?? "—"}</TableCell>
-                      <TableCell>{fmtYER(b.subtotal)}</TableCell>
-                      <TableCell>{b.arrears > 0 ? <span className="text-destructive">{fmtYER(b.arrears)}</span> : "—"}</TableCell>
-                      <TableCell className="font-bold">{fmtYER(b.total)}</TableCell>
-                      <TableCell>{fmtYER(b.paid_amount)}</TableCell>
-                      <TableCell>
-                        <Badge variant={b.status === "paid" ? "default" : b.status === "partial" ? "secondary" : "destructive"}>
-                          {b.status === "paid" ? "مدفوعة" : b.status === "partial" ? "جزئية" : "غير مدفوعة"}
-                        </Badge>
-                      </TableCell>
-                    </TableRow>
-                  );
-                })}
-              </TableBody>
-            </Table>
-          </CardContent>
-        </Card>
-      )}
+      {queue.length > 0 && <Card><CardHeader className="flex flex-row items-center justify-between"><CardTitle className="text-base">قراءات محفوظة على الجهاز ({queue.filter((p: PendingReading) => p.status !== "synced").length})</CardTitle><Button size="sm" variant="outline" onClick={() => void syncPending(true)}><RefreshCw className="w-3 h-3 ms-1" /> مزامنة الآن</Button></CardHeader><CardContent className="space-y-2">{queue.filter((p: PendingReading) => p.status !== "synced").slice(0, 20).map(p => <div key={p.clientId} className="rounded-md border p-2 text-xs">عداد <span className="font-mono" dir="ltr">{p.meterNumber}</span> — قراءة <span className="font-mono">{p.current}</span> — {p.status}</div>)}</CardContent></Card>}
     </div>
   );
-}
-
-function PhotoLink({ path, loader }: { path: string; loader: (p: string) => Promise<string | null> }) {
-  const [url, setUrl] = useState<string | null>(null);
-  useEffect(() => { void loader(path).then(setUrl); }, [path, loader]);
-  if (!url) return <span>📷 صورة</span>;
-  return <a href={url} target="_blank" rel="noreferrer" className="underline hover:text-primary">📷 عرض الصورة</a>;
 }
 
 function Info({ label, children }: { label: string; children: React.ReactNode }) {
-  return (
-    <div>
-      <div className="text-muted-foreground text-[10px]">{label}</div>
-      <div className="text-sm font-medium mt-0.5">{children}</div>
-    </div>
-  );
+  return <div><div className="text-muted-foreground">{label}</div><div className="font-medium mt-0.5">{children}</div></div>;
 }
