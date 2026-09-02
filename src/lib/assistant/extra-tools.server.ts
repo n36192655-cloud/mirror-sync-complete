@@ -47,12 +47,80 @@ export const EXTRA_ASSISTANT_TOOLS = [
       },
     },
   },
+  {
+    type: "function",
+    function: {
+      name: "list_unpaid_bills",
+      description: "قائمة دقيقة للفواتير التي لم تُسدّد بالكامل. عند طلب غير المسدد، استخدم هذه الأداة بدلاً من list_bills مع unpaid_only لأنها تفحص مجموعة نتائج كافية قبل تطبيق حد العرض.",
+      parameters: {
+        type: "object",
+        properties: {
+          customer_id: { type: "string", description: "UUID اختياري للمشترك" },
+          from: { type: "string", description: "من تاريخ الإصدار YYYY-MM-DD" },
+          to: { type: "string", description: "إلى تاريخ الإصدار YYYY-MM-DD" },
+          limit: { type: "number", description: "أقصى عدد فواتير معروضة" },
+        },
+        additionalProperties: false,
+      },
+    },
+  },
 ] as const;
 
 export async function runExtraAssistantTool(supabase: DB, name: string, args: Record<string, unknown>): Promise<ExtraToolResult> {
   if (name === "get_customer_period_summary") return getCustomerPeriodSummary(supabase, args);
   if (name === "get_project_efficiency") return getProjectEfficiency(supabase, args);
+  if (name === "list_unpaid_bills") return listUnpaidBills(supabase, args);
   return fail(`أداة غير معروفة: ${name}`);
+}
+
+async function listUnpaidBills(supabase: DB, args: Record<string, unknown>): Promise<ExtraToolResult> {
+  const customerId = args.customer_id;
+  const from = typeof args.from === "string" ? args.from : "";
+  const to = typeof args.to === "string" ? args.to : "";
+  const limitRaw = typeof args.limit === "number" && Number.isFinite(args.limit) ? Math.floor(args.limit) : 20;
+  const limit = Math.min(Math.max(limitRaw, 1), 200);
+  if (customerId !== undefined && !isUuid(customerId)) return fail("customer_id يجب أن يكون UUID حقيقياً.");
+  if (from && !/^\d{4}-\d{2}-\d{2}$/.test(from)) return fail("تاريخ البداية غير صالح.");
+  if (to && !/^\d{4}-\d{2}-\d{2}$/.test(to)) return fail("تاريخ النهاية غير صالح.");
+  if (from && to && from > to) return fail("نطاق التاريخ غير صالح.");
+
+  let query = supabase
+    .from("water_bills")
+    .select("bill_number,customer_id,issued_at,due_date,total,paid_amount,status")
+    .order("issued_at", { ascending: false })
+    .limit(200);
+  if (isUuid(customerId)) query = query.eq("customer_id", customerId);
+  if (from) query = query.gte("issued_at", from);
+  if (to) query = query.lte("issued_at", `${to}T23:59:59`);
+
+  const { data, error } = await query;
+  if (error) return fail(error.message);
+
+  const unpaid = (data ?? [])
+    .filter((b) => n(b.total) - n(b.paid_amount) > 0.01)
+    .slice(0, limit);
+
+  return {
+    ok: true,
+    data: {
+      count: unpaid.length,
+      bills: unpaid.map((b) => ({
+        bill_number: b.bill_number ?? "",
+        customer_id: b.customer_id,
+        date: d(b.issued_at),
+        due_date: d(b.due_date),
+        amount: n(b.total),
+        paid: n(b.paid_amount),
+        remaining: Math.max(n(b.total) - n(b.paid_amount), 0),
+        status: b.status,
+      })),
+    },
+    table: {
+      title: "الفواتير غير المسددة بالكامل",
+      columns: ["رقم الفاتورة", "التاريخ", "المبلغ", "المدفوع", "المتبقي", "الحالة"],
+      rows: unpaid.map((b) => [b.bill_number ?? "", d(b.issued_at), n(b.total), n(b.paid_amount), Math.max(n(b.total) - n(b.paid_amount), 0), b.status]),
+    },
+  };
 }
 
 async function getCustomerPeriodSummary(supabase: DB, args: Record<string, unknown>): Promise<ExtraToolResult> {
@@ -127,7 +195,7 @@ async function getProjectEfficiency(supabase: DB, args: Record<string, unknown>)
     supabase.from("production_log").select("produced_m3,logged_at").gte("logged_at", from).lte("logged_at", `${to}T23:59:59`),
     supabase.from("water_readings").select("consumption,status,reading_date").gte("reading_date", from).lte("reading_date", `${to}T23:59:59`).eq("status", "approved"),
     supabase.from("water_bills").select("total,paid_amount,issued_at").gte("issued_at", from).lte("issued_at", `${to}T23:59:59`),
-    supabase.from("payments").select("amount,status,paid_at").gte("paid_at", from).lte("paid_at", `${to}T23:59:59`).eq("status", "approved"),
+    supabase.from("payments").select("amount,status,paid_at").gte("paid_at", from).lte("paid_at", `${to}T23:59:59").eq("status", "approved"),
   ]);
   if (productionError) return fail(productionError.message);
   if (readingsError) return fail(readingsError.message);
