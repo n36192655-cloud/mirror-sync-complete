@@ -57,7 +57,6 @@ function exactSerialMatch(
     )
     .map(canonicalMeterNumber)
     .filter(Boolean);
-  // Fail closed: with a linked meter, unreadable identity is not acceptable for a reading.
   if (values.length === 0) return "mismatch";
   return values.includes(known) ? "match" : "mismatch";
 }
@@ -77,28 +76,38 @@ export const readMeterFromImage = createServerFn({ method: "POST" })
     ]
       .filter(Boolean)
       .join("\n");
-    const system = `أنت نظام رؤية متخصص في عدادات المياه.
 
-المطلوب مهمتان مستقلتان:
-1) التعرف على الرقم التسلسلي للعداد نفسه للتحقق من الهوية.
-2) قراءة خانات الاستهلاك داخل نافذة القراءة فقط.
+    const system = `أنت نظام رؤية متخصص في قراءة عدادات المياه من الصور الواقعية.
 
-قواعد رقم العداد:
-- اقرأ الرقم التسلسلي كما هو مطبوع على جسم العداد أو الملصق المرتبط به.
+نفّذ مهمتين مستقلتين لكن مترابطتين:
+1) إثبات هوية العداد من الرقم التسلسلي المطبوع على جسم العداد أو ملصقه.
+2) استخراج قراءة الاستهلاك من آلية عرض العداد، مهما كان نوعها.
+
+أنواع العدادات المحتملة:
+- عداد ميكانيكي بعجلات أرقام.
+- عداد رقمي LCD/شاشة.
+- عداد يجمع عجلات أرقام مع خانات عشرية/حمراء.
+- عداد عقارب/أقراص ميكانيكية عند عدم وجود نافذة أرقام واضحة.
+
+قواعد الهوية:
+- الرقم التسلسلي هو الرقم المطبوع على جسم العداد أو الملصق المرتبط به.
 - لا تعتبر رقم القراءة أو السنة أو التاريخ أو DN/Q3/R160 أو أي رقم تقني رقماً للعداد.
 - لا تخمّن أي خانة.
 - إذا لم يكن الرقم التسلسلي واضحاً بالكامل، meterNumber يجب أن يكون نصاً فارغاً.
-- لا تضف أو تحذف أصفاراً ولا تصحح حرفاً مشكوكاً فيه من نفسك.
+- لا تضف أو تحذف أصفاراً ولا تصحح حرفاً مشكوكاً فيه.
 
 قواعد القراءة:
-- مصدر القراءة الوحيد هو نافذة خانات الاستهلاك.
-- تجاهل الرقم التسلسلي وكل الأرقام خارج نافذة القراءة.
-- اقرأ الخانات من اليسار إلى اليمين، مع الحفاظ على الأصفار في البداية.
-- استبعد الخانات الكسرية الحمراء/العشرية إذا كانت ظاهرة، حسب إعداد العداد المعتاد.
-- إذا كانت خانة ميكانيكية بين رقمين ولا يمكن حسمها، اعتبر النتيجة ambiguous.
-- إذا كانت الصورة ضبابية أو مظلمة أو فيها انعكاس/حجب يمنع قراءة خانة، لا تخمّن.
-- readingDigits يجب أن يكون النص الدقيق للخانات الصحيحة فقط، أو فارغاً عند عدم القدرة على الحسم.
-- confidence بين 0 و100 ويعبّر عن وضوح القراءة فعلياً، وليس عن احتمال التخمين.
+- إذا وجدت نافذة خانات استهلاك واضحة، فهي المصدر الأول للقراءة.
+- اقرأ الخانات من اليسار إلى اليمين كما تظهر فعلياً.
+- لا تخلط الرقم التسلسلي أو الأرقام التقنية مع القراءة.
+- حافظ على الخانات الصحيحة كاملة، بما فيها الأصفار البادئة.
+- الخانات العشرية/الحمراء لا تُدخل في القراءة الصحيحة إلا إذا كانت جزءاً واضحاً من قراءة الاستهلاك المعتمدة في الصورة؛ لا تخترع قراراً من نفسك.
+- إذا كان العداد بعقارب/أقراص، استنتج القراءة من ترتيب العقارب والعدادات الميكانيكية فقط عندما تكون المؤشرات واضحة، مع مراعاة انتقال العقرب بين رقمين.
+- إذا كان أي رقم أو عقرب بين قيمتين ولا يمكن حسمه، ambiguous=true وreadingDigits يجب أن يكون فارغاً.
+- إذا كانت الصورة ضبابية أو مظلمة أو فيها انعكاس أو حجب يمنع قراءة خانة/عقرب، لا تخمّن.
+- يجب أن تمثل readingDigits القراءة النهائية فقط، بلا وحدات أو فواصل تفسيرية.
+- confidence من 0 إلى 100 ويعبّر عن وضوح الدليل المرئي، وليس عن الثقة الناتجة من التخمين.
+- لا تجعل القراءة أقل من القراءة السابقة عند وجود قراءة سابقة؛ إذا كانت أقل فاعتبرها غير مقبولة.
 - أعد JSON فقط.`;
 
     const schema = {
@@ -144,7 +153,7 @@ export const readMeterFromImage = createServerFn({ method: "POST" })
               content: [
                 {
                   type: "text",
-                  text: `حلّل صورة عداد المياه. تحقق من هوية العداد أولاً، ثم اقرأ خانات الاستهلاك فقط.\n${hints}`,
+                  text: `حلّل صورة عداد المياه. أثبت هوية العداد أولاً ثم استخرج قراءة الاستهلاك فقط.\n${hints}`,
                 },
                 {
                   type: "image_url",
@@ -184,14 +193,20 @@ export const readMeterFromImage = createServerFn({ method: "POST" })
 
       const readingDigits =
         typeof parsed.readingDigits === "string" ? parsed.readingDigits.trim() : "";
-      const digitOnly = readingDigits.replace(/[^0-9]/g, "");
-      const compactDigits = readingDigits.replace(/\s/g, "");
+      const normalizedReading = readingDigits.replace(/[٠-٩۰-۹]/g, (d) => {
+        const code = d.charCodeAt(0);
+        return code >= 0x0660 && code <= 0x0669
+          ? String(code - 0x0660)
+          : String(code - 0x06f0);
+      });
+      const compactReading = normalizedReading.replace(/\s/g, "");
+      const numericReading = compactReading.replace(/,/g, ".");
+      const validReadingShape = /^(?:\d{1,12}|\d{1,12}\.\d{1,3})$/.test(numericReading);
       const readingValue =
-        digitOnly.length >= 1 &&
-        digitOnly.length <= 12 &&
-        digitOnly.length === compactDigits.length
-          ? Number(digitOnly)
+        validReadingShape && Number.isFinite(Number(numericReading))
+          ? Number(numericReading)
           : null;
+
       const rawConfidence = parsed.confidence;
       const confidence =
         typeof rawConfidence === "number" && Number.isFinite(rawConfidence)
@@ -213,7 +228,7 @@ export const readMeterFromImage = createServerFn({ method: "POST" })
       ]);
       return {
         readingValue,
-        readingDigits,
+        readingDigits: normalizedReading,
         confidence,
         meterNumber,
         otherNumbers,
