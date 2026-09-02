@@ -8,12 +8,12 @@ VALUES (
   'meter-readings',
   false,
   26214400, -- 25 MiB: preserve high-quality camera originals; no client compression
-  ARRAY['image/jpeg', 'image/png', 'image/webp']
+  ARRAY['image/jpeg', 'image/jpg', 'image/png', 'image/webp']
 )
 ON CONFLICT (id) DO UPDATE SET
   public = false,
   file_size_limit = 26214400,
-  allowed_mime_types = ARRAY['image/jpeg', 'image/png', 'image/webp'];
+  allowed_mime_types = ARRAY['image/jpeg', 'image/jpg', 'image/png', 'image/webp'];
 
 CREATE OR REPLACE FUNCTION storage.meter_reading_path_tenant_id(storage_path text)
 RETURNS uuid
@@ -35,7 +35,7 @@ BEGIN
   EXCEPTION WHEN invalid_text_representation THEN
     RETURN NULL;
   END;
-  IF parts[4] !~ '^[0-9a-fA-F-]{36}\.(jpg|png|webp)$' THEN
+  IF parts[4] !~* '^[0-9a-f-]{36}\.(jpg|png|webp)$' THEN
     RETURN NULL;
   END IF;
   RETURN tenant_uuid;
