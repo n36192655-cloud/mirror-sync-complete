@@ -196,13 +196,60 @@ export async function imageToCompressedDataUrl(
   return fileToDataUrl(file);
 }
 
-export function fileToDataUrl(file: Blob): Promise<string> {
+const MAX_VISION_DATA_URL_LENGTH = 7_500_000;
+const MAX_VISION_SIDE = 2200;
+
+function blobToDataUrl(file: Blob): Promise<string> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = () => resolve(String(reader.result));
     reader.onerror = () => reject(reader.error ?? new Error("تعذر قراءة الصورة"));
     reader.readAsDataURL(file);
   });
+}
+
+async function createVisionDataUrl(file: Blob): Promise<string> {
+  const original = await blobToDataUrl(file);
+  if (original.length <= MAX_VISION_DATA_URL_LENGTH) return original;
+  if (typeof window === "undefined") throw new Error("تحليل الصورة متاح في المتصفح فقط");
+
+  const src = URL.createObjectURL(file);
+  try {
+    const img = new Image();
+    await new Promise<void>((resolve, reject) => {
+      img.onload = () => resolve();
+      img.onerror = () => reject(new Error("تعذر تجهيز الصورة للتحليل"));
+      img.src = src;
+    });
+    const scale = Math.min(1, MAX_VISION_SIDE / Math.max(img.naturalWidth, img.naturalHeight));
+    const width = Math.max(1, Math.round(img.naturalWidth * scale));
+    const height = Math.max(1, Math.round(img.naturalHeight * scale));
+    const canvas = document.createElement("canvas");
+    canvas.width = width;
+    canvas.height = height;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) throw new Error("تعذر تجهيز الصورة للتحليل");
+    ctx.drawImage(img, 0, 0, width, height);
+
+    let quality = 0.88;
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      const candidate = canvas.toDataURL("image/jpeg", quality);
+      if (candidate.length <= MAX_VISION_DATA_URL_LENGTH) return candidate;
+      quality -= 0.1;
+    }
+    const fallback = canvas.toDataURL("image/jpeg", 0.45);
+    if (fallback.length > MAX_VISION_DATA_URL_LENGTH) {
+      throw new Error("تعذر تجهيز نسخة تحليل مناسبة للصورة؛ احتفظنا بالصورة الأصلية كما هي.");
+    }
+    return fallback;
+  } finally {
+    URL.revokeObjectURL(src);
+  }
+}
+
+/** Returns an AI-safe derived image when needed; the supplied Blob is never modified or re-encoded for storage. */
+export async function fileToDataUrl(file: Blob): Promise<string> {
+  return createVisionDataUrl(file);
 }
 
 export async function recognizeMeterImage(
