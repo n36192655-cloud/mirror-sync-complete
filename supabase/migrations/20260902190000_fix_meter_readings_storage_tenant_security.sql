@@ -1,6 +1,5 @@
 -- MIZAN: secure meter-reading image storage
--- Aligns the original storage migration with the current tenant model and
--- the application path: tenants/{tenant_id}/readings/{client_id}.{ext}
+-- Application path: tenants/{tenant_id}/readings/{client_id}.{ext}
 
 INSERT INTO storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
 VALUES (
@@ -54,22 +53,6 @@ AS $$
   );
 $$;
 
-CREATE OR REPLACE FUNCTION storage.meter_reading_is_role(storage_path text, allowed_roles text[])
-RETURNS boolean
-LANGUAGE sql
-STABLE
-SECURITY DEFINER
-SET search_path = pg_catalog, public, pg_temp
-AS $$
-  SELECT EXISTS (
-    SELECT 1
-    FROM public.profiles p
-    WHERE p.id = auth.uid()
-      AND p.tenant_id = storage.meter_reading_path_tenant_id(storage_path)
-      AND p.role::text = ANY(allowed_roles)
-  );
-$$;
-
 DROP POLICY IF EXISTS "Meter readings storage upload policy" ON storage.objects;
 DROP POLICY IF EXISTS "Meter readings storage read policy" ON storage.objects;
 DROP POLICY IF EXISTS "Meter readings storage update policy" ON storage.objects;
@@ -84,7 +67,10 @@ ON storage.objects FOR INSERT TO authenticated
 WITH CHECK (
   bucket_id = 'meter-readings'
   AND storage.meter_reading_same_tenant(name)
-  AND storage.meter_reading_is_role(name, ARRAY['reader', 'manager'])
+  AND (
+    public.has_tenant_role(storage.meter_reading_path_tenant_id(name), 'reader')
+    OR public.has_tenant_role(storage.meter_reading_path_tenant_id(name), 'manager')
+  )
 );
 
 CREATE POLICY "meter_readings_select"
@@ -99,12 +85,12 @@ ON storage.objects FOR UPDATE TO authenticated
 USING (
   bucket_id = 'meter-readings'
   AND storage.meter_reading_same_tenant(name)
-  AND storage.meter_reading_is_role(name, ARRAY['manager'])
+  AND public.has_tenant_role(storage.meter_reading_path_tenant_id(name), 'manager')
 )
 WITH CHECK (
   bucket_id = 'meter-readings'
   AND storage.meter_reading_same_tenant(name)
-  AND storage.meter_reading_is_role(name, ARRAY['manager'])
+  AND public.has_tenant_role(storage.meter_reading_path_tenant_id(name), 'manager')
 );
 
 CREATE POLICY "meter_readings_delete"
@@ -112,12 +98,10 @@ ON storage.objects FOR DELETE TO authenticated
 USING (
   bucket_id = 'meter-readings'
   AND storage.meter_reading_same_tenant(name)
-  AND storage.meter_reading_is_role(name, ARRAY['manager'])
+  AND public.has_tenant_role(storage.meter_reading_path_tenant_id(name), 'manager')
 );
 
 REVOKE ALL ON FUNCTION storage.meter_reading_path_tenant_id(text) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION storage.meter_reading_path_tenant_id(text) TO authenticated;
 REVOKE ALL ON FUNCTION storage.meter_reading_same_tenant(text) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION storage.meter_reading_same_tenant(text) TO authenticated;
-REVOKE ALL ON FUNCTION storage.meter_reading_is_role(text, text[]) FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION storage.meter_reading_is_role(text, text[]) TO authenticated;
