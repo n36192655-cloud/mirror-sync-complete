@@ -114,6 +114,7 @@ export async function recognizeMeterImage(image: Blob | File | string, options: 
     const tokens: OcrToken[] = cleaned.map((w) => ({ text: w.text, confidence: Math.round(w.confidence), height: Math.round(w.height), kind: classify(w.text, known, best ? w.text === best.text : false) }));
     const meterNumberMatch = serialProven ? (options.knownMeterNumber ?? null) : null;
     if (known && !serialProven) throw new Error(`عذراً، تعذر إثبات رقم العداد المرتبط (${options.knownMeterNumber}). أعد تصوير الرقم كاملاً وبوضوح.`);
-    return { rawText, tokens, meterNumberMatch, readingCandidate: best?.text ?? null, readingValue: best?.shape.value ?? null, readingConfidence: best ? Math.round(best.confidence) : 0, readingAmbiguous, otherTokens: tokens.filter((t) => t.kind !== "reading") };
+    if (readingAmbiguous) return { rawText, tokens, meterNumberMatch, readingCandidate: null, readingValue: null, readingConfidence: 0, readingAmbiguous: true, otherTokens: tokens.filter((t) => t.kind !== "reading") };
+    return { rawText, tokens, meterNumberMatch, readingCandidate: best?.text ?? null, readingValue: best?.shape.value ?? null, readingConfidence: best ? Math.round(best.confidence) : 0, readingAmbiguous: false, otherTokens: tokens.filter((t) => t.kind !== "reading") };
   } finally { await worker.terminate(); }
 }
