@@ -46,8 +46,8 @@ async function getCustomerPeriodSummary(supabase: DB, args: Record<string, unkno
  const [{ data: customer, error: customerError }, { data: bills, error: billsError }, { data: payments, error: paymentsError }, { data: readings, error: readingsError }, { data: balance, error: balanceError }] = await Promise.all([
   supabase.from("customers").select("id,name,pay_account,phone").eq("id", customerId).maybeSingle(),
   supabase.from("water_bills").select("bill_number,issued_at,due_date,total,paid_amount,status").eq("customer_id", customerId).gte("issued_at", from).lte("issued_at", `${to}T23:59:59`).order("issued_at", { ascending: true }),
-  supabase.from("payments").select("amount,paid_at,method,status").eq("customer_id", customerId).gte("paid_at", from).lte("paid_at", `${to}T23:59:59`).eq("status", "approved").order("paid_at", { ascending: true }),
-  supabase.from("water_readings").select("reading_date,current_reading,previous,consumption,status").eq("customer_id", customerId).gte("reading_date", from).lte("reading_date", `${to}T23:59:59`).eq("status", "approved").order("reading_date", { ascending: true }),
+  supabase.from("payments").select("amount,paid_at,method,status").eq("customer_id", customerId).gte("paid_at", from).lte("paid_at", `${to}T23:59:59").eq("status", "approved").order("paid_at", { ascending: true }),
+  supabase.from("water_readings").select("reading_date,current_reading,previous,consumption,status").eq("customer_id", customerId).gte("reading_date", from).lte("reading_date", `${to}T23:59:59").eq("status", "approved").order("reading_date", { ascending: true }),
   supabase.from("customer_balances").select("current_balance").eq("customer_id", customerId).maybeSingle(),
  ]);
  if (customerError) return fail(customerError.message); if (billsError) return fail(billsError.message); if (paymentsError) return fail(paymentsError.message); if (readingsError) return fail(readingsError.message); if (balanceError) return fail(balanceError.message); if (!customer) return { ok: true, data: { found: false, note: "المشترك غير موجود ضمن صلاحياتك." } };
