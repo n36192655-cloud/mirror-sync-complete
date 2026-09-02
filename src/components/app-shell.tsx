@@ -1,5 +1,5 @@
 import { Link, useRouterState, useNavigate } from "@tanstack/react-router";
-import { LayoutDashboard, Users, ClipboardList, Receipt, Wallet, Droplets, LogOut, TrendingDown, Scale, UserCog, User, Layers } from "lucide-react";
+import { LayoutDashboard, Users, ClipboardList, Receipt, Wallet, Droplets, LogOut, TrendingDown, Scale, UserCog, User, Layers, Calculator } from "lucide-react";
 import { useEffect, type ReactNode } from "react";
 import { cn } from "@/lib/utils";
 import { useAuth, useAuthHydrated, ROLE_LABEL, canAccess, defaultRouteFor, type Role } from "@/lib/auth";
@@ -9,7 +9,6 @@ import { syncPending, useOnlineStatus } from "@/lib/sync";
 import { useStore } from "@/lib/store";
 import { supabase } from "@/integrations/supabase/client";
 import { toast } from "sonner";
-
 
 
 type NavItem = { to: string; label: string; icon: typeof LayoutDashboard; roles: Role[] };
@@ -22,6 +21,7 @@ const NAV: NavItem[] = [
   { to: "/payments", label: "التحصيل", icon: Wallet, roles: ["super_admin", "manager", "collector"] },
   { to: "/tariffs", label: "التعرفة الشرائحية", icon: Layers, roles: ["super_admin", "manager"] },
   { to: "/loss-analysis", label: "تحليل الفاقد", icon: TrendingDown, roles: ["super_admin", "manager"] },
+  { to: "/costs", label: "التكلفة والاستدامة", icon: Calculator, roles: ["super_admin", "manager"] },
   { to: "/users", label: "المستخدمون", icon: UserCog, roles: ["super_admin", "manager"] },
   { to: "/assistant", label: "ميزان الذكي", icon: Scale, roles: ["super_admin", "manager"] },
   { to: "/profile", label: "حسابي", icon: User, roles: ["super_admin", "manager", "reader", "collector"] },
@@ -30,7 +30,6 @@ const NAV: NavItem[] = [
 function isSessionMissing(err: unknown): boolean {
   return err instanceof Error && err.name === "SessionMissingError";
 }
-
 
 export function AppShell({ children }: { children: ReactNode }) {
   const pathname = useRouterState({ select: (s) => s.location.pathname });
@@ -41,7 +40,6 @@ export function AppShell({ children }: { children: ReactNode }) {
 
   // لا يوجد تغيير كلمة مرور إجباري — الدخول أصبح باختيار الدور بنقرة واحدة.
 
-
   // Route protection — لا تُطبَّق قبل استعادة الجلسة من التخزين المحلي.
   useEffect(() => {
     if (!authHydrated) return;
@@ -51,7 +49,6 @@ export function AppShell({ children }: { children: ReactNode }) {
       navigate({ to: defaultRouteFor(user.role), replace: true });
     }
   }, [pathname, user, navigate, authHydrated]);
-
 
   // Auto-sync when coming online
   useEffect(() => {
@@ -65,7 +62,6 @@ export function AppShell({ children }: { children: ReactNode }) {
     const onHydrateError = (err: unknown) => {
       console.warn("[Mizan] hydrate failed:", err);
       if (isSessionMissing(err)) {
-        // جلسة منتهية: لا نعرض واجهة صفرية وكأنها بيانات صحيحة.
         toast.error("انتهت جلسة الدخول — سجّل الدخول مرة أخرى");
         void logout().then(() => navigate({ to: "/login", replace: true }));
         return;
@@ -95,14 +91,12 @@ export function AppShell({ children }: { children: ReactNode }) {
     };
   }, [user]);
 
-
   const isPublic = pathname === "/login" || pathname === "/reset-password";
   if (isPublic) return <>{children}</>;
   if (!user) return null;
   if (!canAccess(user.role, pathname)) return null;
 
   const nav = NAV.filter((n) => n.roles.includes(user.role));
-
 
   return (
     <div className="min-h-screen flex w-full bg-background text-foreground">
