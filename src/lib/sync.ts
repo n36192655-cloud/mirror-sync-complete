@@ -16,20 +16,14 @@ import {
 type ReadingInsert = Database["public"]["Tables"]["water_readings"]["Insert"];
 
 const PHOTO_BUCKET = "meter-readings";
+const MAX_PHOTO_BYTES = 25 * 1024 * 1024;
+const ALLOWED_IMAGE_TYPES = new Set(["image/jpeg", "image/png", "image/webp"]);
 
-/** حالات العنصر في طابور المزامنة — تُعرض للمستخدم كما هي. */
 export type QueueStatus = "pending" | "syncing" | "synced" | "failed";
 
-/**
- * قراءة ميدانية مؤجلة. تُخزَّن في IndexedDB (دائمة عبر إغلاق التطبيق) مع
- * صورة العداد كـ Blob منفصل. `clientId` يُرسل كـ `client_uuid` وهو UNIQUE
- * لكل مؤسسة — أي إعادة مزامنة لا تُنشئ تكراراً.
- */
 export interface PendingReading {
   clientId: string;
-  /** customer uuid */
   customerId: string;
-  /** meters.id uuid */
   meterId: string;
   meterNumber: string;
   current: number;
@@ -40,10 +34,8 @@ export interface PendingReading {
   longitude?: number;
   accuracy?: number;
   tenantId?: string;
-  /** توجد صورة عداد محفوظة محلياً لهذا العنصر. */
   hasPhoto?: boolean;
   photoType?: string;
-  /** مسار الصورة بعد رفعها بنجاح (يمنع إعادة الرفع عند إعادة المحاولة). */
   photoPath?: string;
   status: QueueStatus;
   attempts: number;
@@ -59,15 +51,10 @@ function notify() {
   if (typeof window !== "undefined") window.dispatchEvent(new Event(EVENT));
 }
 
-/** ترحيل الطابور القديم (localStorage) إلى التخزين الدائم مرة واحدة. */
 async function migrateLegacy(): Promise<void> {
   if (typeof window === "undefined") return;
   let raw: string | null = null;
-  try {
-    raw = window.localStorage.getItem(LEGACY_KEY);
-  } catch {
-    return;
-  }
+  try { raw = window.localStorage.getItem(LEGACY_KEY); } catch { return; }
   if (!raw) return;
   try {
     const old = JSON.parse(raw) as Partial<PendingReading>[];
@@ -82,14 +69,8 @@ async function migrateLegacy(): Promise<void> {
         createdAt: p.createdAt ?? new Date().toISOString(),
       } as PendingReading);
     }
-  } catch {
-    /* بيانات تالفة — تُتجاهل */
-  }
-  try {
-    window.localStorage.removeItem(LEGACY_KEY);
-  } catch {
-    /* ignore */
-  }
+  } catch { /* ignore corrupt legacy data */ }
+  try { window.localStorage.removeItem(LEGACY_KEY); } catch { /* ignore */ }
   notify();
 }
 
@@ -105,7 +86,6 @@ export async function getPending(): Promise<PendingReading[]> {
   return all.sort((a, b) => (a.createdAt < b.createdAt ? -1 : 1));
 }
 
-/** العناصر التي ما زالت بحاجة إلى مزامنة. */
 export function isUnsynced(p: PendingReading): boolean {
   return p.status !== "synced";
 }
@@ -116,7 +96,8 @@ export async function addPending(
 ): Promise<PendingReading> {
   await ensureMigrated();
   void requestPersistentStorage();
-  const clientId = p.clientId ?? `${crypto.randomUUID()}`;
+  const clientId = p.clientId ?? crypto.randomUUID();
+  if (photo) validatePhoto(photo);
   const item: PendingReading = {
     ...p,
     clientId,
@@ -138,7 +119,6 @@ export async function removePending(clientId: string): Promise<void> {
   notify();
 }
 
-/** إعادة محاولة يدوية لعنصر فاشل — يعيده إلى الطابور فوراً دون انتظار المهلة. */
 export async function retryPending(clientId: string): Promise<void> {
   const item = await idbGet<PendingReading>(STORE_QUEUE, clientId);
   if (!item || item.status === "synced") return;
@@ -156,7 +136,6 @@ async function setStatus(item: PendingReading, patch: Partial<PendingReading>) {
   notify();
 }
 
-/** مهلة تصاعدية بين المحاولات الفاشلة (30ث، 1د، 2د … بحد أقصى 15د). */
 function readyForRetry(p: PendingReading): boolean {
   if (p.status === "synced") return false;
   if (p.status !== "failed" || !p.lastAttemptAt) return true;
@@ -164,26 +143,47 @@ function readyForRetry(p: PendingReading): boolean {
   return Date.now() - +new Date(p.lastAttemptAt) >= wait;
 }
 
-/**
- * فشل ناتج عن انقطاع الشبكة (وليس رفضاً من الخادم) — عندها تُحفظ العملية
- * محلياً بدل اعتبارها خطأً نهائياً. `navigator.onLine` وحده غير كافٍ.
- */
 export function isNetworkError(e: unknown): boolean {
   if (typeof navigator !== "undefined" && !navigator.onLine) return true;
   const msg = (e instanceof Error ? e.message : String(e ?? "")).toLowerCase();
-  return (
-    e instanceof TypeError ||
-    msg.includes("failed to fetch") ||
-    msg.includes("network") ||
-    msg.includes("networkerror") ||
-    msg.includes("load failed") ||
-    msg.includes("timeout") ||
-    msg.includes("aborted")
-  );
+  return e instanceof TypeError || msg.includes("failed to fetch") || msg.includes("network") ||
+    msg.includes("networkerror") || msg.includes("load failed") || msg.includes("timeout") || msg.includes("aborted");
+}
+
+function validatePhoto(blob: Blob): void {
+  if (!ALLOWED_IMAGE_TYPES.has(blob.type)) {
+    throw new Error("صيغة صورة العداد غير مدعومة. استخدم JPG أو PNG أو WebP.");
+  }
+  if (blob.size <= 0 || blob.size > MAX_PHOTO_BYTES) {
+    throw new Error("حجم صورة العداد غير صالح أو كبير جداً.");
+  }
+}
+
+function extensionForType(type?: string): string {
+  switch (type) {
+    case "image/png": return "png";
+    case "image/webp": return "webp";
+    default: return "jpg";
+  }
+}
+
+function isUniqueViolation(error: { code?: string; message?: string } | null): boolean {
+  return error?.code === "23505";
+}
+
+function isClientUuidConflict(error: { code?: string; message?: string } | null): boolean {
+  if (!isUniqueViolation(error)) return false;
+  const msg = (error?.message ?? "").toLowerCase();
+  return msg.includes("client_uuid") || msg.includes("water_readings_client_uuid_uidx");
+}
+
+function isDailyMeterConflict(error: { code?: string; message?: string } | null): boolean {
+  if (!isUniqueViolation(error)) return false;
+  const msg = (error?.message ?? "").toLowerCase();
+  return msg.includes("one_per_meter_day") || msg.includes("tenant_id, meter_id, reading_date") || msg.includes("water_readings_one_per_meter_day_uidx");
 }
 
 let syncing = false;
-
 
 export async function syncPending(force = false): Promise<{ synced: number; failed: number }> {
   if (syncing) return { synced: 0, failed: 0 };
@@ -192,33 +192,33 @@ export async function syncPending(force = false): Promise<{ synced: number; fail
   try {
     const list = (await getPending()).filter((p) => isUnsynced(p) && (force || readyForRetry(p)));
     if (!list.length) return { synced: 0, failed: 0 };
-
     let synced = 0;
     let failed = 0;
 
     for (const p of list) {
       await setStatus(p, { status: "syncing" });
+      let photoPath = p.photoPath ?? null;
       try {
-        const { data: tenantRow } = await supabase.rpc("current_tenant_id");
+        const { data: tenantRow, error: tenantError } = await supabase.rpc("current_tenant_id");
+        if (tenantError) throw new Error(`تعذّر تحديد المؤسسة الحالية: ${tenantError.message}`);
         const tenantId = p.tenantId ?? (tenantRow as unknown as string | null);
         if (!tenantId) throw new Error("تعذّر تحديد المؤسسة الحالية");
 
-        // 1) رفع صورة العداد المحفوظة محلياً (مرة واحدة فقط لكل عنصر).
-        let photoPath = p.photoPath ?? null;
         if (!photoPath && p.hasPhoto) {
           const blob = await getPendingPhoto(p.clientId);
-          if (blob) {
-            const path = `tenants/${tenantId}/readings/${p.clientId}.jpg`;
-            const up = await supabase.storage
-              .from(PHOTO_BUCKET)
-              .upload(path, blob, { contentType: blob.type || "image/jpeg", upsert: true });
-            if (up.error) throw new Error(`رفع الصورة فشل: ${up.error.message}`);
-            photoPath = path;
-            await setStatus(p, { status: "syncing", photoPath });
-          }
+          if (!blob) throw new Error("صورة القراءة غير موجودة في التخزين المحلي؛ لا يمكن مزامنة القراءة بأمان.");
+          validatePhoto(blob);
+          const path = `tenants/${tenantId}/readings/${p.clientId}.${extensionForType(blob.type)};
+          const up = await supabase.storage.from(PHOTO_BUCKET).upload(path, blob, {
+            contentType: blob.type,
+            upsert: true,
+            cacheControl: "31536000",
+          });
+          if (up.error) throw new Error(`رفع الصورة فشل: ${up.error.message}`);
+          photoPath = path;
+          await setStatus(p, { status: "syncing", photoPath });
         }
 
-        // 2) إدراج القراءة — client_uuid يمنع التكرار على مستوى قاعدة البيانات.
         const { error } = await supabase.from("water_readings").insert({
           tenant_id: tenantId,
           customer_id: p.customerId,
@@ -234,8 +234,10 @@ export async function syncPending(force = false): Promise<{ synced: number; fail
           gps_verified: p.latitude != null,
         } as ReadingInsert);
 
-        // 23505 = مسجلة مسبقاً بنفس client_uuid → العنصر منتهٍ فعلاً.
-        if (error && error.code !== "23505") throw new Error(error.message);
+        if (error && isDailyMeterConflict(error) && !isClientUuidConflict(error)) {
+          throw new Error("هذه القراءة لم تُزامن: يوجد بالفعل تسجيل ناجح لهذا العداد في نفس اليوم.");
+        }
+        if (error && !isClientUuidConflict(error)) throw new Error(error.message);
 
         await setStatus(p, {
           status: "synced",
@@ -246,8 +248,8 @@ export async function syncPending(force = false): Promise<{ synced: number; fail
         await idbDelete(STORE_BLOBS, p.clientId);
         synced++;
 
-        if (p.tenantId) {
-          void broadcastTenantEvent(p.tenantId, "reading", {
+        if (tenantId) {
+          void broadcastTenantEvent(tenantId, "reading", {
             customerId: p.customerId,
             meterNumber: p.meterNumber,
             current: p.current,
@@ -257,18 +259,19 @@ export async function syncPending(force = false): Promise<{ synced: number; fail
         }
       } catch (e) {
         failed++;
+        const message = e instanceof Error ? e.message : String(e);
         await setStatus(p, {
           status: "failed",
           attempts: p.attempts + 1,
           lastAttemptAt: new Date().toISOString(),
-          lastError: (e as Error).message,
+          lastError: message,
+          photoPath: photoPath ?? p.photoPath,
         });
       }
     }
 
     await pruneSynced();
     if (synced > 0) {
-      // فشل التحديث من السحابة لا يمس الطابور ولا اللقطة المحلية.
       void useStore.getState().hydrateFromSupabase().catch((err) => {
         console.warn("[Mizan] hydrate after sync failed (offline data kept):", err);
       });
@@ -279,72 +282,46 @@ export async function syncPending(force = false): Promise<{ synced: number; fail
   }
 }
 
-/** حذف العناصر المزامنة بعد 24 ساعة (تبقى ظاهرة للمستخدم كإثبات قبل ذلك). */
 async function pruneSynced() {
   const all = await idbGetAll<PendingReading>(STORE_QUEUE);
   const cutoff = Date.now() - 24 * 60 * 60_000;
   for (const p of all) {
-    if (p.status === "synced" && p.syncedAt && +new Date(p.syncedAt) < cutoff) {
-      await removePending(p.clientId);
-    }
+    if (p.status === "synced" && p.syncedAt && +new Date(p.syncedAt) < cutoff) await removePending(p.clientId);
   }
 }
 
-// ─── Supabase Realtime broadcast ────────────────────────────────────────────
-// Cheap tenant-scoped broadcasts (no DB write per message). Managers and
-// collectors listening to `tenant:<id>` receive updates instantly.
 export type TenantEventType = "reading" | "bill" | "payment";
 
-export async function broadcastTenantEvent(
-  tenantId: string,
-  type: TenantEventType,
-  payload: Record<string, unknown>,
-) {
+export async function broadcastTenantEvent(tenantId: string, type: TenantEventType, payload: Record<string, unknown>) {
   try {
     const channel = supabase.channel(`tenant:${tenantId}`);
     await channel.subscribe();
     await channel.send({ type: "broadcast", event: type, payload });
     await supabase.removeChannel(channel);
-  } catch (err) {
-    console.warn("[Mizan] broadcast failed:", err);
-  }
+  } catch (err) { console.warn("[Mizan] broadcast failed:", err); }
 }
 
-export function subscribeToTenantEvents(
-  tenantId: string,
-  onEvent: (type: TenantEventType, payload: Record<string, unknown>) => void,
-) {
+export function subscribeToTenantEvents(tenantId: string, onEvent: (type: TenantEventType, payload: Record<string, unknown>) => void) {
   const channel = supabase.channel(`tenant:${tenantId}`);
   (["reading", "bill", "payment"] as const).forEach((event) => {
-    channel.on("broadcast", { event }, (msg) =>
-      onEvent(event, (msg.payload ?? {}) as Record<string, unknown>),
-    );
+    channel.on("broadcast", { event }, (msg) => onEvent(event, (msg.payload ?? {}) as Record<string, unknown>));
   });
   channel.subscribe();
-  return () => {
-    void supabase.removeChannel(channel);
-  };
+  return () => { void supabase.removeChannel(channel); };
 }
 
 export function useOnlineStatus() {
-  const [online, setOnline] = useState(
-    typeof navigator !== "undefined" ? navigator.onLine : true,
-  );
-
+  const [online, setOnline] = useState(typeof navigator !== "undefined" ? navigator.onLine : true);
   useEffect(() => {
     const on = () => {
       setOnline(true);
       setTimeout(() => {
         void syncPending(true).then((result) => {
-          if (result.synced > 0) {
-            toast.success(`تمت مزامنة ${result.synced} قراءة مؤجلة`);
-          }
+          if (result.synced > 0) toast.success(`تمت مزامنة ${result.synced} قراءة مؤجلة`);
         });
       }, 1000);
     };
     const off = () => setOnline(false);
-    // إعادة المحاولة أيضاً عند عودة التطبيق للواجهة وبشكل دوري — قد يعود
-    // الاتصال دون إطلاق حدث online (تغيّر شبكة، خروج من وضع الطيران…).
     const retry = () => {
       if (!navigator.onLine) return;
       setOnline(true);
@@ -365,18 +342,13 @@ export function useOnlineStatus() {
       window.removeEventListener("focus", retry);
       clearInterval(timer);
     };
-
   }, []);
-
   return online;
 }
 
-/** الطابور الحيّ للواجهة مع تحديث فوري عند أي تغيير. */
 export function useOfflineQueue() {
   const [items, setItems] = useState<PendingReading[]>([]);
-  const refresh = useCallback(() => {
-    void getPending().then(setItems);
-  }, []);
+  const refresh = useCallback(() => { void getPending().then(setItems); }, []);
   useEffect(() => {
     refresh();
     window.addEventListener(EVENT, refresh);
