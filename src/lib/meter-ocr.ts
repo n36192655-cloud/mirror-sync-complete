@@ -15,7 +15,49 @@
  *    كقائمة "أرقام/نصوص أخرى" للعرض فقط، ولا يدخل في أي حساب.
  */
 
+/**
+ * موارد Tesseract محلية بالكامل (public/tesseract) — لا CDN ولا إنترنت أثناء
+ * العمل الميداني. الملفات تُخدم من نفس الأصل ويخزّنها المتصفح/الـSW للاستخدام
+ * دون شبكة.
+ */
+export const LOCAL_TESSERACT_OPTIONS = {
+  workerPath: "/tesseract/worker.min.js",
+  corePath: "/tesseract/",
+  langPath: "/tesseract",
+  gzip: false,
+} as const;
+
+/** تجهيز موارد OCR مسبقاً أثناء الاتصال حتى تعمل أوفلاين لاحقاً. */
+let prewarmed: Promise<boolean> | null = null;
+export function prewarmOcrAssets(): Promise<boolean> {
+  if (typeof window === "undefined") return Promise.resolve(false);
+  if (!prewarmed) {
+    prewarmed = (async () => {
+      try {
+        const files = [
+          "/tesseract/worker.min.js",
+          "/tesseract/eng.traineddata",
+          "/tesseract/tesseract-core-simd-lstm.wasm",
+          "/tesseract/tesseract-core-simd-lstm.wasm.js",
+        ];
+        const cache = typeof caches !== "undefined" ? await caches.open("mizan-ocr") : null;
+        for (const f of files) {
+          if (cache && (await cache.match(f))) continue;
+          const res = await fetch(f, { cache: "force-cache" });
+          if (!res.ok) return false;
+          if (cache) await cache.put(f, res.clone());
+        }
+        return true;
+      } catch {
+        return false;
+      }
+    })();
+  }
+  return prewarmed;
+}
+
 export interface OcrToken {
+
   text: string;
   confidence: number;
   /** ارتفاع الكلمة بالبكسل — مؤشر على حجم الخط داخل الصورة */
@@ -230,7 +272,8 @@ export async function recognizeMeterImage(
   }
 
   const { createWorker } = await import("tesseract.js");
-  const worker = await createWorker("eng");
+  const worker = await createWorker("eng", 1, LOCAL_TESSERACT_OPTIONS);
+
 
   try {
     const input = await preprocess(image);

@@ -178,6 +178,14 @@ function ReadingsPage() {
 
   useEffect(() => { void refresh(); }, [refresh]);
 
+  // تجهيز موارد OCR المحلية أثناء الاتصال حتى تعمل القراءة أوفلاين لاحقاً.
+  useEffect(() => {
+    if (typeof navigator !== "undefined" && navigator.onLine) {
+      void import("@/lib/meter-ocr").then((m) => m.prewarmOcrAssets());
+    }
+  }, []);
+
+
   // ── استعادة مسودة القراءة الجارية (تصمد أمام إعادة التحميل/إغلاق التطبيق) ──
   const [draftLoaded, setDraftLoaded] = useState(false);
   useEffect(() => {
@@ -327,10 +335,44 @@ function ReadingsPage() {
     }
 
     const online = typeof navigator === "undefined" || navigator.onLine;
+    const prevValue = lastReading?.current_reading ?? null;
+
+    // ── أوفلاين: Tesseract المحلي فقط (بلا أي اتصال بـGemini) ──────────────
     if (!online) {
-      toast.warning("بدون إنترنت — حُفظت الصورة محلياً، وتُستخرج القراءة أو تُدخل يدوياً ثم تُرسل عند عودة الشبكة");
+      setOcrBusy(true);
+      try {
+        const { recognizeMeterImage, normalizeSerial } = await import("@/lib/meter-ocr");
+        const res = await recognizeMeterImage(file, {
+          knownMeterNumber: meterNumber || undefined,
+          previousReading: prevValue,
+        });
+        setOcrOthers(res.otherTokens.map((t) => t.text).slice(0, 8));
+        if (res.meterNumberMatch) setOcrSerial(res.meterNumberMatch);
+
+        const serialSeen = res.tokens.find((t) => t.kind === "meter-number");
+        if (meterNumber && !res.meterNumberMatch && serialSeen) {
+          clearPhoto();
+          toast.error(`صورة مرفوضة: رقم العداد في الصورة لا يطابق عداد المشترك (${meterNumber})`);
+          return;
+        }
+        void normalizeSerial;
+
+        if (res.readingValue == null || res.readingAmbiguous) {
+          toast.error("بدون إنترنت: القراءة غير واضحة — أعد التصوير مع تقريب الأرقام داخل الإطار");
+          return;
+        }
+        setOcrReading(res.readingValue);
+        setCurrent(String(res.readingValue));
+        toast.success(`قراءة محلية (بدون إنترنت): ${res.readingValue} — راجعها ثم اعتمدها`);
+      } catch (e) {
+        console.error("Local OCR error:", e);
+        toast.error("تعذّر تشغيل القراءة المحلية — أدخل القراءة يدوياً ثم اعتمدها");
+      } finally {
+        setOcrBusy(false);
+      }
       return;
     }
+
 
     setOcrBusy(true);
     const prev = lastReading?.current_reading ?? null;
