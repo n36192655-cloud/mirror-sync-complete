@@ -230,7 +230,8 @@ export async function recognizeMeterImage(
   }
 
   const { createWorker } = await import("tesseract.js");
-  const worker = await createWorker("eng");
+  const worker = await createWorker("eng", 1, LOCAL_TESSERACT_OPTIONS);
+
 
   try {
     const input = await preprocess(image);
