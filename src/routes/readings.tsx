@@ -178,6 +178,14 @@ function ReadingsPage() {
 
   useEffect(() => { void refresh(); }, [refresh]);
 
+  // تجهيز موارد OCR المحلية أثناء الاتصال حتى تعمل القراءة أوفلاين لاحقاً.
+  useEffect(() => {
+    if (typeof navigator !== "undefined" && navigator.onLine) {
+      void import("@/lib/meter-ocr").then((m) => m.prewarmOcrAssets());
+    }
+  }, []);
+
+
   // ── استعادة مسودة القراءة الجارية (تصمد أمام إعادة التحميل/إغلاق التطبيق) ──
   const [draftLoaded, setDraftLoaded] = useState(false);
   useEffect(() => {
