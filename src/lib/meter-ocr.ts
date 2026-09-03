@@ -58,6 +58,18 @@ const ARABIC_DIGITS = /[٠-٩۰-۹]/g;
 export function normalizeDigits(input: string) { return input.replace(ARABIC_DIGITS, (d) => { const code = d.charCodeAt(0); return code >= 0x0660 && code <= 0x0669 ? String(code - 0x0660) : String(code - 0x06f0); }); }
 export function normalizeSerial(v: string) { return normalizeDigits(v).normalize("NFKC").trim().toUpperCase().replace(/[\u2010-\u2015\u2212]/g, "-").replace(/[\s_-]+/g, "-").replace(/^-+|-+$/g, ""); }
 
+/**
+ * OCR engines may split a printed serial into multiple words on one line.
+ * We therefore test the complete OCR text line-by-line in addition to the
+ * individual OCR tokens. The comparison itself remains exact after the same
+ * canonicalization; there is no fuzzy/partial matching.
+ */
+export function serialFoundInOcrText(rawText: string, knownSerial: string): boolean {
+  const known = normalizeSerial(knownSerial);
+  if (!known) return false;
+  return rawText.split(/\r?\n/).some((line) => normalizeSerial(line) === known);
+}
+
 const DATE_RE = /^(19|20)\d{2}$|^\d{1,2}[./-]\d{1,2}([./-]\d{2,4})?$/;
 const UNIT_RE = /^(m3|m³|cbm|kwh|lt|l|kg|bar|°c|mm|cm)$/i;
 function classify(text: string, known: string, isReading: boolean): OcrToken["kind"] { const n = normalizeSerial(text); if (known && n === known) return "meter-number"; if (UNIT_RE.test(text.trim())) return "unit"; if (DATE_RE.test(normalizeDigits(text.trim()))) return "date"; if (isReading) return "reading"; return "other"; }
@@ -119,12 +131,12 @@ export async function recognizeMeterImage(image: Blob | File | string, options: 
   const { createWorker } = await import("tesseract.js"); const worker = await createWorker("eng", 1, LOCAL_TESSERACT_OPTIONS);
   try {
     const input = await preprocess(image); const general = await worker.recognize(input as never, {}, { text: true, blocks: true } as never); const rawText = general.data.text ?? ""; const generalWords = flattenWords(general.data); let digitWords: FlatWord[] = [];
-    try { await worker.setParameters({ tessedit_char_whitelist: "0123456789.," }); const digits = await worker.recognize(input as never, {}, { text: true, blocks: true } as never); digitWords = flattenWords(digits.data); await worker.setParameters({ tessedit_char_whitelist: "" }); } catch { digitWords = []; }
+    try { await worker.setParameters({ tessedit_char_whitelist: "0123456789.," }); const digits = await worker.recognize(input as never, {}, { text: true, blocks: true } as never); digitWords = flattenWords(digits.data); } catch { digitWords = []; } finally { try { await worker.setParameters({ tessedit_char_whitelist: "" }); } catch { /* worker teardown follows */ } }
     const known = options.knownMeterNumber ? normalizeSerial(options.knownMeterNumber) : "";
     const fallback = !generalWords.length && !digitWords.length ? rawText.split(/\s+/).filter(Boolean).map((t) => ({ text: t.trim(), confidence: 0, height: 0 })) : [];
     const cleaned = [...generalWords, ...digitWords, ...fallback].filter((w) => w.text.length > 0);
     const excluded = new Set((options.excludeNumbers ?? []).filter((v) => v != null && String(v).trim() !== "").map((v) => normalizeSerial(String(v))));
-    const serialProven = !known || cleaned.some((w) => normalizeSerial(w.text) === known);
+    const serialProven = !known || cleaned.some((w) => normalizeSerial(w.text) === known) || serialFoundInOcrText(rawText, known);
     const candidates = cleaned.map((w) => ({ ...w, shape: readingShape(w.text) })).filter((w) => w.shape.ok && w.shape.value != null && w.shape.value >= 0 && normalizeSerial(w.text) !== known && !excluded.has(normalizeSerial(w.text)) && !UNIT_RE.test(w.text.trim()) && !DATE_RE.test(normalizeDigits(w.text.trim())));
     const prev = options.previousReading ?? null;
     const scored = candidates.map((c) => { const digitLen = normalizeDigits(c.text).replace(/\D/g, "").length; let score = c.height * 2 + c.confidence + digitLen * 8; if (prev != null && c.shape.value != null) { if (c.shape.value >= prev) score += 25; if (Math.abs(c.shape.value - prev) <= Math.max(50, prev * 0.5)) score += 25; } return { ...c, score }; }).sort((a, b) => b.score - a.score);
