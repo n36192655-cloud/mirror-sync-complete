@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
-import { normalizeDigits, normalizeSerial, serialFoundInOcrText } from "./meter-ocr";
+import { isTechnicalNumberToken, normalizeDigits, normalizeSerial, serialFoundInOcrText } from "./meter-ocr";
 
-describe("meter OCR identity normalization", () => {
+describe("meter OCR safeguards", () => {
   test("canonicalizes Arabic and Persian digits", () => {
     expect(normalizeDigits("١٢٣٤٥٦٧٨٩٠")).toBe("1234567890");
     expect(normalizeDigits("۱۲۳۴۵۶۷۸۹۰")).toBe("1234567890");
@@ -21,5 +21,14 @@ describe("meter OCR identity normalization", () => {
   test("recognizes an exact serial when OCR split it across a line", () => {
     expect(serialFoundInOcrText("Water Meter\nAB 12-٣٤\nReading 001234", "AB-12-34")).toBe(true);
     expect(serialFoundInOcrText("Water Meter\nAB 12-٣٥\nReading 001234", "AB-12-34")).toBe(false);
+  });
+
+  test("rejects technical markings that can look like readings", () => {
+    expect(isTechnicalNumberToken("R160")).toBe(true);
+    expect(isTechnicalNumberToken("DN50")).toBe(true);
+    expect(isTechnicalNumberToken("DN150")).toBe(true);
+    expect(isTechnicalNumberToken("Q3 2.5")).toBe(true);
+    expect(isTechnicalNumberToken("2025")).toBe(true);
+    expect(isTechnicalNumberToken("12345")).toBe(false);
   });
 });
