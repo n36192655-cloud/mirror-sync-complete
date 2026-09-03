@@ -1,5 +1,5 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { supabase } from "@/lib/supabase";
 import { useAuth } from "@/lib/auth";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -14,6 +14,7 @@ import { MeterCamera } from "@/components/meter-camera";
 import { getGeoFix, type GeoFix } from "@/lib/geolocation";
 import { addPending, isNetworkError, syncPending, useOfflineQueue, type PendingReading } from "@/lib/sync";
 import { readFieldCache, requestPersistentStorage, saveFieldCache } from "@/lib/offline-db";
+import { createMeterReadingDeadline, MeterReadingTimeoutError, withMeterReadingDeadline } from "@/lib/meter-reading-deadline";
 import type { Database } from "@/integrations/supabase/types";
 
 type CustomerRow = Database["public"]["Tables"]["customers"]["Row"];
@@ -58,6 +59,7 @@ function ReadingsPage() {
   const [loading, setLoading] = useState(true);
   const [approvalBusy, setApprovalBusy] = useState<string | null>(null);
   const [offlineSnapshotAt, setOfflineSnapshotAt] = useState<string | null>(null);
+  const captureSequenceRef = useRef(0);
 
   const meterByCustomer = useMemo(() => {
     const m = new Map<string, MeterLink>();
@@ -136,31 +138,65 @@ function ReadingsPage() {
   }, [q, customers, meterByCustomer]);
 
   function pickCustomer(c: CustomerRow) {
+    captureSequenceRef.current += 1;
     const meter = meterByCustomer.get(c.id);
     setCustomerId(c.id); setMeterId(meter?.id ?? null); setCurrent(""); setPhotoBlob(null); setPhotoPreview(undefined); setOcrSerial(undefined); setOcrReading(null); setCameraOpen(false);
     if (!meter) toast.error("لا يوجد عداد مرتبط بهذا المشترك");
   }
 
-  function clearPhoto() { setPhotoBlob(null); setPhotoPreview(undefined); setOcrSerial(undefined); setOcrReading(null); setCurrent(""); }
+  function clearPhoto() { captureSequenceRef.current += 1; setPhotoBlob(null); setPhotoPreview(undefined); setOcrSerial(undefined); setOcrReading(null); setCurrent(""); }
 
   async function handleCapture(file: File, previewUrl: string) {
     if (!selectedMeter || !meterNumber) return toast.error("اختر المشترك والعداد المرتبط أولاً");
+    const captureToken = ++captureSequenceRef.current;
+    const deadline = createMeterReadingDeadline();
     setPhotoBlob(file); setPhotoPreview(previewUrl); setOcrSerial(undefined); setOcrReading(null); setCurrent(""); setOcrBusy(true);
-    try {
+    const isCurrentCapture = () => captureSequenceRef.current === captureToken;
+    const processCapture = async () => {
+      if (!isCurrentCapture()) throw new MeterReadingTimeoutError("تم استبدال عملية الالتقاط الحالية");
+      deadline.assertWithinDeadline();
       if (typeof navigator !== "undefined" && !navigator.onLine) {
-        const { recognizeMeterImage } = await import("@/lib/meter-ocr");
-        const res = await recognizeMeterImage(file, { knownMeterNumber: meterNumber, previousReading: previousReading });
+        const { recognizeMeterImage } = await withMeterReadingDeadline(import("@/lib/meter-ocr"), deadline);
+        const res = await withMeterReadingDeadline(recognizeMeterImage(file, { knownMeterNumber: meterNumber, previousReading: previousReading }), deadline);
+        deadline.assertWithinDeadline();
+        if (!isCurrentCapture()) return;
         if (!res.meterNumberMatch || normalizeSerial(res.meterNumberMatch) !== normalizeSerial(meterNumber)) { clearPhoto(); toast.error(`عذراً، هذه الصورة ليست للعداد المرتبط (${meterNumber}). أعد تصوير العداد الصحيح.`); return; }
         if (res.readingValue == null || res.readingAmbiguous) { toast.error("عذراً، تعذر استخراج قراءة واضحة. أعد التصوير مع تقريب شاشة العداد."); return; }
-        setOcrSerial(res.meterNumberMatch); setOcrReading(res.readingValue); setCurrent(String(res.readingValue)); toast.success(`تم التحقق من العداد واستخراج القراءة: ${res.readingValue}`); return;
+        deadline.assertWithinDeadline();
+        if (!isCurrentCapture()) return;
+        setOcrSerial(res.meterNumberMatch); setOcrReading(res.readingValue); setCurrent(String(res.readingValue));
+        console.info("[meter-reading] completed", { mode: "offline", elapsedMs: Math.round(deadline.elapsedMs()) });
+        toast.success(`تم التحقق من العداد واستخراج القراءة: ${res.readingValue}`); return;
       }
-      const [{ fileToDataUrl }, { readMeterFromImage }] = await Promise.all([import("@/lib/meter-ocr"), import("@/lib/meter-vision.functions")]);
-      const ai = await readMeterFromImage({ data: { imageDataUrl: await fileToDataUrl(file), knownMeterNumber: meterNumber, previousReading } });
+      const [{ fileToDataUrl }, { readMeterFromImage }] = await withMeterReadingDeadline(Promise.all([import("@/lib/meter-ocr"), import("@/lib/meter-vision.functions")]), deadline);
+      const imageDataUrl = await withMeterReadingDeadline(fileToDataUrl(file), deadline);
+      const ai = await withMeterReadingDeadline(readMeterFromImage({ data: { imageDataUrl, knownMeterNumber: meterNumber, previousReading } }), deadline);
+      deadline.assertWithinDeadline();
+      if (!isCurrentCapture()) return;
       if (ai.serialMatch !== "match" || !ai.meterNumber || normalizeSerial(ai.meterNumber) !== normalizeSerial(meterNumber)) { clearPhoto(); toast.error(`عذراً، هذه الصورة ليست للعداد المرتبط (${meterNumber}). أعد تصوير العداد الصحيح.`); return; }
       if (ai.readingValue == null || ai.ambiguous) { toast.error("عذراً، تعذر استخراج قراءة واضحة. أعد التصوير مع تقريب شاشة العداد."); return; }
-      setOcrSerial(ai.meterNumber); setOcrReading(ai.readingValue); setCurrent(String(ai.readingValue)); toast.success(`تم التحقق من العداد واستخراج القراءة: ${ai.readingValue}`);
-    } catch (e) { console.error("Meter image verification failed", e); clearPhoto(); toast.error((e as Error).message || "تعذر تحليل صورة العداد. أعد التصوير."); }
-    finally { setOcrBusy(false); }
+      deadline.assertWithinDeadline();
+      if (!isCurrentCapture()) return;
+      setOcrSerial(ai.meterNumber); setOcrReading(ai.readingValue); setCurrent(String(ai.readingValue));
+      console.info("[meter-reading] completed", { mode: "online", elapsedMs: Math.round(deadline.elapsedMs()) });
+      toast.success(`تم التحقق من العداد واستخراج القراءة: ${ai.readingValue}`);
+    };
+    try {
+      await withMeterReadingDeadline(processCapture(), deadline);
+    } catch (e) {
+      if (!isCurrentCapture()) return;
+      if (e instanceof MeterReadingTimeoutError) {
+        clearPhoto();
+        toast.error("تعذر استخراج قراءة العداد خلال 5 ثوانٍ. أعد تصوير العداد بصورة أوضح.");
+        console.warn("[meter-reading] deadline exceeded", { elapsedMs: Math.round(deadline.elapsedMs()) });
+      } else {
+        console.error("Meter image verification failed", e);
+        clearPhoto();
+        toast.error((e as Error).message || "تعذر تحليل صورة العداد. أعد التصوير.");
+      }
+    } finally {
+      if (isCurrentCapture()) setOcrBusy(false);
+    }
   }
 
   async function captureGeo() {
@@ -170,7 +206,7 @@ function ReadingsPage() {
     finally { setGeoBusy(false); }
   }
 
-  function resetAfterSave() { setCurrent(""); setPhotoBlob(null); setPhotoPreview(undefined); setOcrSerial(undefined); setOcrReading(null); setGeo(null); setCameraOpen(false); setReadingDate(localDateStamp()); }
+  function resetAfterSave() { captureSequenceRef.current += 1; setCurrent(""); setPhotoBlob(null); setPhotoPreview(undefined); setOcrSerial(undefined); setOcrReading(null); setGeo(null); setCameraOpen(false); setReadingDate(localDateStamp()); }
 
   async function saveReading() {
     if (!tenantId || !user) return toast.error("لا توجد جلسة نشطة");
