@@ -50,8 +50,20 @@ export function prewarmOcrAssets(): Promise<boolean> {
 export interface OcrToken { text: string; confidence: number; height: number; kind: "reading" | "meter-number" | "date" | "unit" | "other"; }
 export interface MeterOcrResult { rawText: string; tokens: OcrToken[]; meterNumberMatch: string | null; readingCandidate: string | null; readingValue: number | null; readingConfidence: number; readingAmbiguous: boolean; otherTokens: OcrToken[]; }
 
-const ARABIC_DIGITS = /[٠-٩۰-۹]/g;
-export function normalizeDigits(input: string) { return input.replace(ARABIC_DIGITS, (d) => { const code = d.charCodeAt(0); return code >= 0x0660 && code <= 0x0669 ? String(code - 0x0660) : String(code - 0x06f0); }); }
+/** Normalize Arabic/Persian and common Indic decimal digits seen on international meter displays. */
+const DIGIT_RANGES: Array<[number, number]> = [
+  [0x0660, 0x0669], [0x06f0, 0x06f9], [0x0966, 0x096f], [0x09e6, 0x09ef],
+  [0x0ae6, 0x0aef], [0x0a66, 0x0a6f], [0x0be6, 0x0bef], [0x0c66, 0x0c6f],
+  [0x0ce6, 0x0cef], [0x0d66, 0x0d6f], [0x0b66, 0x0b6f],
+];
+const DIGIT_RE = /[٠-٩۰-۹०-९০-৯૦-૯੦-੯௦-௯౦-౯೦-೯൦-൯୦-୯]/g;
+export function normalizeDigits(input: string) {
+  return input.replace(DIGIT_RE, (d) => {
+    const code = d.charCodeAt(0);
+    for (const [start, end] of DIGIT_RANGES) if (code >= start && code <= end) return String(code - start);
+    return d;
+  });
+}
 export function normalizeSerial(v: string) { return normalizeDigits(v).normalize("NFKC").trim().toUpperCase().replace(/[\u2010-\u2015\u2212]/g, "-").replace(/[\s_-]+/g, "-").replace(/^-+|-+$/g, ""); }
 
 export function serialFoundInOcrText(rawText: string, knownSerial: string): boolean {
@@ -62,8 +74,6 @@ export function serialFoundInOcrText(rawText: string, knownSerial: string): bool
 
 const DATE_RE = /^(19|20)\d{2}$|^\d{1,2}[./-]\d{1,2}([./-]\d{2,4})?$/;
 const UNIT_RE = /^(m3|m³|cbm|kwh|lt|l|kg|bar|°c|mm|cm)$/i;
-// Meter markings such as DN50, Q3 2.5, R160, class/size/year and model labels are
-// identification/specification data, never consumption. They must not become OCR readings.
 const TECHNICAL_NUMBER_RE = /^(?:DN|Q[1234]?|R|PN|MID|ISO|EN|CL(?:ASS)?|CLASS|SIZE)\s*[-:_]?\s*[0-9A-Z./-]+$/i;
 export function isTechnicalNumberToken(text: string): boolean {
   const normalized = normalizeDigits(text).trim().replace(/\s+/g, " ");
@@ -158,7 +168,6 @@ export async function recognizeMeterImage(image: Blob | File | string, options: 
     if (error instanceof MeterReadingTimeoutError) throw error;
     throw error;
   } finally {
-    // Cleanup must never extend the user-visible five-second budget.
     void Promise.race([worker.terminate(), new Promise<void>((resolve) => setTimeout(resolve, 150))]);
   }
 }
