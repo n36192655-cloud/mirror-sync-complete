@@ -12,21 +12,20 @@ import { fmtNum } from "@/lib/pricing";
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, Legend } from "recharts";
 
 export const Route = createFileRoute("/loss-analysis")({
-  head: () => ({ meta: [{ title: "تحليل فاقد المياه — ميزان" }] }),
+  head: () => ({ meta: [{ title: "تحليل فجوة المياه — ميزان" }] }),
   component: LossAnalysisPage,
 });
 
-const LOSS_THRESHOLD = 15; // %
+const LOSS_THRESHOLD = 15; // % — عتبة تشغيلية داخلية وليست معياراً دولياً عاماً
 
-// تعديل لضمان استخراج التاريخ بناءً على التوقيت المحلي للميدان وليس توقيت UTC العالمي
-function todayISO() { 
+function todayISO() {
   const d = new Date();
   const offset = d.getTimezoneOffset() * 60000;
-  return new Date(d.getTime() - offset).toISOString().slice(0, 10); 
+  return new Date(d.getTime() - offset).toISOString().slice(0, 10);
 }
 
 function monthAgoISO() {
-  const d = new Date(); 
+  const d = new Date();
   d.setMonth(d.getMonth() - 1);
   const offset = d.getTimezoneOffset() * 60000;
   return new Date(d.getTime() - offset).toISOString().slice(0, 10);
@@ -45,8 +44,6 @@ function LossAnalysisPage() {
   function onPickPhoto(e: React.ChangeEvent<HTMLInputElement>) {
     const f = e.target.files?.[0];
     if (!f) return;
-    
-    // تنبيه تقني: تخزين Base64 محلياً يستهلك مساحة المتصفح سرياً إذا تخطت الصور حجم 5 ميجا
     const reader = new FileReader();
     reader.onload = () => setPhoto(String(reader.result));
     reader.readAsDataURL(f);
@@ -62,23 +59,20 @@ function LossAnalysisPage() {
   }
 
   const analytics = useMemo(() => {
-    // تعريف موحّد للفاقد ومصدر موحّد للاستهلاك (القراءات المعتمدة فقط)
-    // — نفس الدالة التي تستخدمها لوحة الاستدامة.
     const knownMeters = new Set(meters.map((m) => m.id));
     const scopedReadings = readings.filter((r) => knownMeters.has(r.meter_id));
     return computeNrw(productionLogs, scopedReadings, { from, to });
   }, [productionLogs, readings, meters, from, to]);
 
-  // تحسين الأداء: تغليف بيانات المخطط بـ useMemo لمنع الـ Re-render غير المبرر للمكون الرسومي
   const chartData = useMemo(() => [
-    { name: "المياه (م³)", produced: analytics.produced, consumed: analytics.consumed, loss: analytics.loss },
+    { name: "المياه (م³)", produced: analytics.produced, consumed: analytics.consumed, gap: analytics.loss },
   ], [analytics]);
 
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="text-2xl md:text-3xl font-bold">تحليل فاقد المياه والتسرب</h1>
-        <p className="text-sm text-muted-foreground mt-1">قياس الفرق بين إنتاج المياه من المصدر واستهلاك المشتركين</p>
+        <h1 className="text-2xl md:text-3xl font-bold">تحليل فجوة الإنتاج والاستهلاك</h1>
+        <p className="text-sm text-muted-foreground mt-1">قياس الفرق بين إنتاج المياه من المصدر والاستهلاك المعتمد للمشتركين</p>
       </div>
 
       <div className="grid lg:grid-cols-2 gap-4">
@@ -117,14 +111,14 @@ function LossAnalysisPage() {
               </div>
             </div>
             <div className="pt-2">
-              <LossStat label="فاقد المياه" pct={analytics.pct} loss={analytics.loss} unit="م³" icon={<Droplets className="w-4 h-4" />} />
+              <LossStat label="فجوة الإنتاج والاستهلاك" pct={analytics.pct} loss={analytics.loss} unit="م³" icon={<Droplets className="w-4 h-4" />} />
             </div>
           </CardContent>
         </Card>
       </div>
 
       <Card>
-        <CardHeader><CardTitle className="text-base">المُنتج مقابل المُفوتر</CardTitle></CardHeader>
+        <CardHeader><CardTitle className="text-base">المُنتج مقابل الاستهلاك المعتمد</CardTitle></CardHeader>
         <CardContent className="h-72">
           <ResponsiveContainer width="100%" height="100%">
             <BarChart data={chartData}>
@@ -135,7 +129,7 @@ function LossAnalysisPage() {
               <Legend />
               <Bar dataKey="produced" name="مُنتج" fill="var(--water)" radius={[4, 4, 0, 0]} />
               <Bar dataKey="consumed" name="مُستهلك معتمد" fill="#0ea5e9" radius={[4, 4, 0, 0]} />
-              <Bar dataKey="loss" name="فاقد" fill="#dc2626" radius={[4, 4, 0, 0]} />
+              <Bar dataKey="gap" name="فجوة الإنتاج والاستهلاك" fill="#dc2626" radius={[4, 4, 0, 0]} />
             </BarChart>
           </ResponsiveContainer>
         </CardContent>
@@ -146,9 +140,9 @@ function LossAnalysisPage() {
           <CardContent className="p-4 flex items-start gap-3">
             <AlertTriangle className="w-5 h-5 text-destructive mt-0.5" />
             <div className="text-sm">
-              <div className="font-semibold">تنبيه ذكي — نسبة الفاقد مرتفعة</div>
+              <div className="font-semibold">تنبيه تشغيلي — فجوة مرتفعة</div>
               <div className="text-muted-foreground mt-1">
-                فاقد المياه {analytics.pct.toFixed(1)}% — يوصى بفحص شبكة التوزيع لاحتمال وجود تسرب أو استهلاك غير مُقاس.
+                فجوة الإنتاج والاستهلاك {analytics.pct.toFixed(1)}% — هذه إشارة تستحق التحقق من اكتمال القياسات والاستهلاك المصرح به، ولا تثبت وحدها وجود تسرب أو فاقد ظاهري.
               </div>
             </div>
           </CardContent>
