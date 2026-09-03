@@ -54,5 +54,6 @@ export function requiresStrongVisionEvidence(
     || technology === "smart_ami"
     || displayType === "analog_dial"
     || displayType === "multi_register"
+    || displayType === "black_red_register"
     || displayType === "smart_display";
 }
