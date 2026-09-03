@@ -9,12 +9,12 @@ export interface MeterReadingPerformance {
 }
 
 export function createMeterReadingPerformance(startedAt = performance.now()): MeterReadingPerformance {
-  if (!Number.isFinite(startedAt)) throw new TypeError("startedAt must be finite");
+  if (!Number.isFinite(startedAt)) throw new RangeError("startedAt must be finite");
   return { startedAt, captureCompletedAt: null, processingStartedAt: null, fieldAssignedAt: null, totalMs: null };
 }
 
 function assertTimestamp(at: number): void {
-  if (!Number.isFinite(at)) throw new TypeError("timestamp must be finite");
+  if (!Number.isFinite(at)) throw new RangeError("timestamp must be finite");
 }
 
 export function markCaptureCompleted(trace: MeterReadingPerformance, at = performance.now()): void {
@@ -33,7 +33,7 @@ export function markProcessingStarted(trace: MeterReadingPerformance, at = perfo
 export function markFieldAssigned(trace: MeterReadingPerformance, at = performance.now()): void {
   assertTimestamp(at);
   if (at < trace.startedAt) throw new RangeError("field assignment cannot precede trace start");
-  if (trace.captureCompletedAt === null || trace.processingStartedAt === null) throw new Error("field assignment requires capture and processing timestamps");
+  if (trace.captureCompletedAt === null || trace.processingStartedAt === null) throw new RangeError("field assignment requires capture and processing timestamps");
   if (at < trace.captureCompletedAt || at < trace.processingStartedAt) throw new RangeError("field assignment cannot precede prior stages");
   trace.fieldAssignedAt = at;
   trace.totalMs = at - trace.startedAt;
