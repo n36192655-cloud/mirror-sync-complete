@@ -26,8 +26,15 @@ function validate(input: unknown): VisionInput {
   return { imageDataUrl, knownMeterNumber, previousReading };
 }
 
+function normalizeDigits(value: string): string {
+  return value.replace(/[٠-٩۰-۹]/g, (d) => {
+    const code = d.charCodeAt(0);
+    return code >= 0x0660 && code <= 0x0669 ? String(code - 0x0660) : String(code - 0x06f0);
+  });
+}
+
 function canonicalMeterNumber(value: string): string {
-  return value.normalize("NFKC").trim().toUpperCase().replace(/[\u2010-\u2015\u2212]/g, "-").replace(/[\s_-]+/g, "-").replace(/^-+|-+$/g, "");
+  return normalizeDigits(value).normalize("NFKC").trim().toUpperCase().replace(/[\u2010-\u2015\u2212]/g, "-").replace(/[\s_-]+/g, "-").replace(/^-+|-+$/g, "");
 }
 
 function exactSerialMatch(knownMeterNumber: string | undefined, candidates: Array<string | null | undefined>): "match" | "mismatch" | "unknown" {
@@ -97,7 +104,7 @@ export const readMeterFromImage = createServerFn({ method: "POST" })
       let parsed: Record<string, unknown> = {};
       try { parsed = JSON.parse(content) as Record<string, unknown>; } catch { const match = content.match(/\{[\s\S]*\}/); if (match) { try { parsed = JSON.parse(match[0]) as Record<string, unknown>; } catch { parsed = {}; } } }
       const readingDigits = typeof parsed.readingDigits === "string" ? parsed.readingDigits.trim() : "";
-      const normalizedReading = readingDigits.replace(/[٠-٩۰-۹]/g, (d) => { const code = d.charCodeAt(0); return code >= 0x0660 && code <= 0x0669 ? String(code - 0x0660) : String(code - 0x06f0); });
+      const normalizedReading = normalizeDigits(readingDigits);
       const compactReading = normalizedReading.replace(/\s/g, "");
       const numericReading = compactReading.replace(/,/g, ".");
       const validReadingShape = /^(?:\d{1,12}|\d{1,12}\.\d{1,3})$/.test(numericReading);
