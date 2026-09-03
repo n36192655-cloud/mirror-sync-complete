@@ -2,9 +2,11 @@ import { describe, expect, test } from "bun:test";
 import { isTechnicalNumberToken, normalizeDigits, normalizeSerial, serialFoundInOcrText } from "./meter-ocr";
 
 describe("meter OCR safeguards", () => {
-  test("canonicalizes Arabic and Persian digits", () => {
+  test("canonicalizes Arabic, Persian and common Indic digits", () => {
     expect(normalizeDigits("١٢٣٤٥٦٧٨٩٠")).toBe("1234567890");
     expect(normalizeDigits("۱۲۳۴۵۶۷۸۹۰")).toBe("1234567890");
+    expect(normalizeDigits("१२३४५६७८९०")).toBe("1234567890");
+    expect(normalizeDigits("১২৩৪৫৬৭৮৯০")).toBe("1234567890");
   });
 
   test("keeps serial matching exact after safe formatting normalization", () => {
