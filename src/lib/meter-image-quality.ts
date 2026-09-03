@@ -12,8 +12,21 @@ const MAX_LUMA = 242;
 const MAX_CLIPPED_FRACTION = 0.55;
 const MIN_EDGE_ENERGY = 0.0015;
 
+const qualityCache = new WeakMap<Blob, Promise<MeterImageQuality>>();
+
 export async function assessMeterImageQuality(image: Blob | File | string): Promise<MeterImageQuality> {
   if (typeof window === "undefined") throw new Error("فحص جودة الصورة متاح في المتصفح فقط");
+  if (typeof image !== "string") {
+    const cached = qualityCache.get(image);
+    if (cached) return cached;
+    const pending = assessMeterImageQualityInternal(image);
+    qualityCache.set(image, pending);
+    return pending;
+  }
+  return assessMeterImageQualityInternal(image);
+}
+
+async function assessMeterImageQualityInternal(image: Blob | File | string): Promise<MeterImageQuality> {
   const src = typeof image === "string" ? image : URL.createObjectURL(image);
   try {
     const img = new Image();
