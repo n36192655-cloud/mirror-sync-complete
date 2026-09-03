@@ -11,6 +11,7 @@ describe("meter display decision", () => {
     expect(validateDisplayReading("analog_dial", "1234", 91).ambiguous).toBe(true);
     expect(validateDisplayReading("multi_register", "1234", 91).ambiguous).toBe(true);
     expect(validateDisplayReading("smart_display", "1234", 92).ambiguous).toBe(false);
+    expect(validateDisplayReading("black_red_register", "1234", 91).ambiguous).toBe(true);
   });
 
   test("rejects malformed readings", () => {
@@ -18,9 +19,9 @@ describe("meter display decision", () => {
     expect(validateDisplayReading("digital_led", "12.3456", 99).ambiguous).toBe(true);
   });
 
-  test("normalizes Arabic-Indic digits without changing the value", () => {
+  test("normalizes Arabic-Indic digits and decimal punctuation", () => {
     const result = validateDisplayReading("digital_lcd", "١٢٣٤٫٥", 95);
-    expect(result.candidate).toBe("١٢٣٤٫٥");
-    expect(result.ambiguous).toBe(true);
+    expect(result.candidate).toBe("1234.5");
+    expect(result.ambiguous).toBe(false);
   });
 });
