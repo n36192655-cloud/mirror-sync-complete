@@ -26,6 +26,22 @@ export async function idbGetAll<T>(store:string):Promise<T[]>{try{return(await t
 /** الكتابة الحرجة لا تُخفي QuotaExceededError أو فشل IndexedDB. */
 export async function idbPut(store:string,value:unknown,key?:IDBValidKey):Promise<void>{await tx(store,"readwrite",s=>key===undefined?s.put(value as never):s.put(value as never,key));}
 export async function idbDelete(store:string,key:IDBValidKey):Promise<void>{try{await tx(store,"readwrite",s=>s.delete(key));}catch{ /* حذف التنظيف best-effort */ }}
+
+/**
+ * يحفظ القراءة والصورة الأصلية في معاملة واحدة حتى لا يبقى طابور بلا صورة
+ * أو صورة بلا قراءة إذا انقطعت الكتابة في منتصف العملية.
+ */
+export async function idbPutQueueWithPhoto<T extends {clientId:string}>(queueValue:T,photo:Blob):Promise<void>{
+  await openDb().then(db=>new Promise<void>((resolve,reject)=>{
+    const t=db.transaction([STORE_QUEUE,STORE_BLOBS],"readwrite");
+    t.objectStore(STORE_QUEUE).put(queueValue as never);
+    t.objectStore(STORE_BLOBS).put(photo,queueValue.clientId);
+    t.oncomplete=()=>resolve();
+    t.onerror=()=>reject(t.error??new Error("فشلت معاملة حفظ القراءة والصورة"));
+    t.onabort=()=>reject(t.error??new Error("أُلغيت معاملة حفظ القراءة والصورة"));
+  }));
+}
+
 export async function requestPersistentStorage():Promise<boolean>{try{if(typeof navigator==="undefined"||!navigator.storage?.persist)return false;if(await navigator.storage.persisted?.())return true;return await navigator.storage.persist();}catch{return false;}}
 
 export interface FieldSnapshot<T=unknown>{savedAt:string;data:T;}
