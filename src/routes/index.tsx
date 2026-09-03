@@ -1,39 +1,12 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useEffect, useMemo } from "react";
-import {
-  useStore,
-  computeNrw,
-  computeFinancials,
-  isOfficialReading,
-  readingVolume,
-} from "@/lib/store";
+import { useStore, computeNrw, computeFinancials, isOfficialReading, readingVolume } from "@/lib/store";
 import { fmtYER, fmtNum } from "@/lib/pricing";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
-import {
-  Droplets,
-  Users,
-  AlertTriangle,
-  Leaf,
-  Wallet,
-  TrendingUp,
-  ShieldCheck,
-  Activity,
-} from "lucide-react";
-import {
-  BarChart,
-  Bar,
-  XAxis,
-  YAxis,
-  Tooltip,
-  ResponsiveContainer,
-  PieChart,
-  Pie,
-  Cell,
-  CartesianGrid,
-  Legend,
-} from "recharts";
+import { Droplets, Users, AlertTriangle, Leaf, Wallet, TrendingUp, ShieldCheck, Activity } from "lucide-react";
+import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, PieChart, Pie, Cell, CartesianGrid, Legend } from "recharts";
 
 export const Route = createFileRoute("/")({
   head: () => ({
@@ -55,34 +28,42 @@ function Dashboard() {
   }, [hydrateFromSupabase]);
 
   const k = useMemo(() => {
-    // مؤشرات مالية موحّدة (نفس معادلة الخادم، بلا احتساب مزدوج للدفعات)
     const fin = computeFinancials(bills, payments);
-
-    // الفاقد (NRW) — نفس التعريف والمصدر المستخدمين في صفحة تحليل الفاقد
     const nrw = computeNrw(productionLogs, readings);
-
-    // سلوك الاستهلاك — القراءات المعتمدة فقط هي المصدر الرسمي
     const official = readings.filter(isOfficialReading);
     const suspicious = readings.filter((r) => r.flag !== "ok");
     const okReadings = official.filter((r) => r.flag === "ok");
-    const avgConsumption =
-      okReadings.length > 0
-        ? okReadings.reduce((a, r) => a + readingVolume(r), 0) / okReadings.length
-        : 0;
+    const avgConsumption = okReadings.length > 0
+      ? okReadings.reduce((a, r) => a + readingVolume(r), 0) / okReadings.length
+      : 0;
 
-    // متوسط استهلاك الاشتراك اليومي. لا نسميه "للفرد" لأن عدد أفراد الأسرة غير مسجل في بيانات المشترك.
-    const activeSubs = customers.filter((c) => c.status !== "rejected").length || customers.length;
-    const perSubscriptionDaily = activeSubs > 0 ? nrw.consumed / activeSubs / 30 : 0;
+    // متوسط الفرد اليومي يجب أن يعتمد على السكان الفعليين وفترة زمنية محددة،
+    // لا على إجمالي الاستهلاك التاريخي مقسوماً على 30 وعدد الاشتراكات.
+    const datedOfficial = official.filter((r) => r.flag === "ok" && !Number.isNaN(new Date(r.date).getTime()));
+    const latestReadingTime = datedOfficial.reduce(
+      (latest, r) => Math.max(latest, new Date(r.date).getTime()),
+      0,
+    );
+    const periodEnd = latestReadingTime > 0 ? new Date(latestReadingTime) : new Date();
+    const periodStart = new Date(periodEnd.getTime() - 29 * 24 * 60 * 60 * 1000);
+    const periodConsumption = datedOfficial.reduce((sum, r) => {
+      const t = new Date(r.date).getTime();
+      return t >= periodStart.getTime() && t <= periodEnd.getTime() ? sum + readingVolume(r) : sum;
+    }, 0);
 
-    // تصنيف الاستهلاك — على القراءات المعتمدة فقط ليتطابق مع المتوسط أعلاه
+    const activeCustomers = customers.filter((c) => c.status !== "rejected" && c.status !== "suspended");
+    const population = activeCustomers.reduce((sum, c) => {
+      const members = Number(c.family_members);
+      return sum + (Number.isFinite(members) && members > 0 ? members : 0);
+    }, 0);
+    const periodDays = 30;
+    const perPersonDaily = population > 0 ? periodConsumption / population / periodDays : null;
+
     const buckets = { normal: 0, high: 0, waste: 0 };
     official.forEach((r) => {
       const v = readingVolume(r);
-      if (avgConsumption <= 0) {
-        buckets.normal++;
-        return;
-      }
-      if (v > avgConsumption * 2) buckets.waste++;
+      if (avgConsumption <= 0) buckets.normal++;
+      else if (v > avgConsumption * 2) buckets.waste++;
       else if (v > avgConsumption * 1.2) buckets.high++;
       else buckets.normal++;
     });
@@ -100,16 +81,17 @@ function Dashboard() {
       unpaidBills: fin.unpaidBills,
       paymentsCount: counts.payments || payments.length,
       avgConsumption,
-      perSubscriptionDaily,
+      perPersonDaily,
       subscribers: counts.customers || customers.length,
       officialReadings: official.length,
       suspiciousCount: suspicious.length,
       buckets,
+      population,
+      periodConsumption,
     };
   }, [customers, readings, bills, payments, productionLogs, counts]);
 
   const productionChart = useMemo(() => {
-    // group by month (YYYY-MM) using productionLogs vs readings consumption
     const map = new Map<string, { month: string; produced: number; consumed: number }>();
     const keyOf = (d: string) => d.slice(0, 7);
     productionLogs.forEach((p) => {
@@ -124,13 +106,10 @@ function Dashboard() {
       row.consumed += readingVolume(r);
       map.set(k, row);
     });
-    return Array.from(map.values())
-      .sort((a, b) => a.month.localeCompare(b.month))
-      .slice(-6)
-      .map((r) => ({
-        ...r,
-        loss: Math.max(0, r.produced - r.consumed),
-      }));
+    return Array.from(map.values()).sort((a, b) => a.month.localeCompare(b.month)).slice(-6).map((r) => ({
+      ...r,
+      loss: Math.max(0, r.produced - r.consumed),
+    }));
   }, [productionLogs, readings]);
 
   const bucketsChart = [
@@ -143,29 +122,17 @@ function Dashboard() {
     <div className="space-y-6" dir="rtl">
       <div>
         <h1 className="text-2xl md:text-3xl font-bold">لوحة استدامة المياه</h1>
-        <p className="text-sm text-muted-foreground mt-1">
-          محرك ذكاء استدامة المياه (WSIE) — مؤشرات مباشرة من قاعدة البيانات
-        </p>
+        <p className="text-sm text-muted-foreground mt-1">محرك ذكاء استدامة المياه (WSIE) — مؤشرات مباشرة من قاعدة البيانات</p>
       </div>
 
-      {/* Top KPI row — 4 consolidated cards */}
       <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
-        {/* 1. Network Efficiency & NRW */}
-        <KpiCard
-          title="استدامة الشبكة والفاقد"
-          icon={<Droplets className="w-5 h-5" />}
-          tone="water"
-        >
+        <KpiCard title="استدامة الشبكة والفاقد" icon={<Droplets className="w-5 h-5" />} tone="water">
           <div className="flex items-baseline justify-between">
             <div>
               <div className="text-[11px] text-muted-foreground">نسبة الفاقد (NRW)</div>
-              <div className={`text-2xl font-bold ${k.nrwPct > 25 ? "text-destructive" : k.nrwPct > 15 ? "text-amber-600" : "text-emerald-600"}`}>
-                {k.nrwPct.toFixed(1)}%
-              </div>
+              <div className={`text-2xl font-bold ${k.nrwPct > 25 ? "text-destructive" : k.nrwPct > 15 ? "text-amber-600" : "text-emerald-600"}`}>{k.nrwPct.toFixed(1)}%</div>
             </div>
-            <Badge variant={k.nrwPct > 25 ? "destructive" : "secondary"} className="text-[10px]">
-              {k.nrwPct > 25 ? "مرتفع" : k.nrwPct > 15 ? "متوسط" : "منخفض"}
-            </Badge>
+            <Badge variant={k.nrwPct > 25 ? "destructive" : "secondary"} className="text-[10px]">{k.nrwPct > 25 ? "مرتفع" : k.nrwPct > 15 ? "متوسط" : "منخفض"}</Badge>
           </div>
           <Progress value={Math.min(100, k.efficiencyPct)} className="h-1.5 mt-2" />
           <div className="grid grid-cols-2 gap-2 mt-3 text-[11px]">
@@ -174,20 +141,16 @@ function Dashboard() {
           </div>
         </KpiCard>
 
-        {/* 2. Consumption Efficiency */}
-        <KpiCard
-          title="كفاءة الاستهلاك والترشيد"
-          icon={<Leaf className="w-5 h-5" />}
-          tone="eco"
-        >
+        <KpiCard title="كفاءة الاستهلاك والترشيد" icon={<Leaf className="w-5 h-5" />} tone="eco">
           <div>
-            <div className="text-[11px] text-muted-foreground">متوسط الاشتراك اليومي</div>
+            <div className="text-[11px] text-muted-foreground">متوسط الفرد اليومي</div>
             <div className="text-2xl font-bold text-emerald-600">
-              {k.perSubscriptionDaily.toFixed(2)}
-              <span className="text-xs font-normal text-muted-foreground"> م³/يوم/اشتراك</span>
+              {k.perPersonDaily === null ? "—" : k.perPersonDaily.toFixed(2)}
+              <span className="text-xs font-normal text-muted-foreground"> م³/يوم/فرد</span>
             </div>
             <div className="mt-2 text-[10px] text-muted-foreground">
-              المؤشر محسوب لكل اشتراك نشط، وليس لكل فرد.
+              محسوب من القراءات المعتمدة المنتظمة خلال آخر 30 يوماً ومن إجمالي أفراد الأسر المسجلين.
+              {k.perPersonDaily !== null && k.perPersonDaily > 1 ? " القيمة مرتفعة وتحتاج مراجعة بيانات الاستهلاك أو حجم الأسرة." : ""}
             </div>
           </div>
           <div className="grid grid-cols-2 gap-2 mt-3 text-[11px]">
@@ -196,18 +159,11 @@ function Dashboard() {
           </div>
         </KpiCard>
 
-        {/* 3. Financial Sustainability */}
-        <KpiCard
-          title="الاستدامة المالية والتحصيل"
-          icon={<Wallet className="w-5 h-5" />}
-          tone="gold"
-        >
+        <KpiCard title="الاستدامة المالية والتحصيل" icon={<Wallet className="w-5 h-5" />} tone="gold">
           <div className="flex items-baseline justify-between">
             <div>
               <div className="text-[11px] text-muted-foreground">كفاءة التحصيل</div>
-              <div className={`text-2xl font-bold ${k.collectionRate >= 70 ? "text-emerald-600" : k.collectionRate >= 40 ? "text-amber-600" : "text-destructive"}`}>
-                {k.collectionRate.toFixed(1)}%
-              </div>
+              <div className={`text-2xl font-bold ${k.collectionRate >= 70 ? "text-emerald-600" : k.collectionRate >= 40 ? "text-amber-600" : "text-destructive"}`}>{k.collectionRate.toFixed(1)}%</div>
             </div>
             <TrendingUp className="w-4 h-4 text-muted-foreground" />
           </div>
@@ -216,17 +172,10 @@ function Dashboard() {
             <MiniStat label="محصّل" value={fmtYER(k.totalCollected)} />
             <MiniStat label="متأخرات" value={fmtYER(k.outstanding)} danger={k.outstanding > 0} />
           </div>
-          <div className="mt-1 text-[10px] text-muted-foreground">
-            {fmtNum(counts.bills || bills.length)} فاتورة · {fmtNum(k.paymentsCount)} دفعة
-          </div>
+          <div className="mt-1 text-[10px] text-muted-foreground">{fmtNum(counts.bills || bills.length)} فاتورة · {fmtNum(k.paymentsCount)} دفعة</div>
         </KpiCard>
 
-        {/* 4. Safety & Subscribers */}
-        <KpiCard
-          title="السلامة والمشتركون"
-          icon={<ShieldCheck className="w-5 h-5" />}
-          tone={k.suspiciousCount > 0 ? "danger" : "eco"}
-        >
+        <KpiCard title="السلامة والمشتركون" icon={<ShieldCheck className="w-5 h-5" />} tone={k.suspiciousCount > 0 ? "danger" : "eco"}>
           <div className="flex items-baseline justify-between">
             <div>
               <div className="text-[11px] text-muted-foreground">إجمالي المشتركين</div>
@@ -236,28 +185,16 @@ function Dashboard() {
           </div>
           <div className="grid grid-cols-2 gap-2 mt-3 text-[11px]">
             <MiniStat label="عدادات نشطة" value={fmtNum(meters.filter((m) => m.status === "active").length)} />
-            <MiniStat
-              label="تنبيهات نشطة"
-              value={fmtNum(k.suspiciousCount)}
-              danger={k.suspiciousCount > 0}
-            />
+            <MiniStat label="تنبيهات نشطة" value={fmtNum(k.suspiciousCount)} danger={k.suspiciousCount > 0} />
           </div>
         </KpiCard>
       </div>
 
-      {/* Charts */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
         <Card className="lg:col-span-2">
-          <CardHeader>
-            <CardTitle className="text-base flex items-center gap-2">
-              <Activity className="w-4 h-4 text-primary" />
-              كفاءة الضخ مقابل الاستهلاك (آخر 6 أشهر)
-            </CardTitle>
-          </CardHeader>
+          <CardHeader><CardTitle className="text-base flex items-center gap-2"><Activity className="w-4 h-4 text-primary" />كفاءة الضخ مقابل الاستهلاك (آخر 6 أشهر)</CardTitle></CardHeader>
           <CardContent className="h-72">
-            {productionChart.length === 0 ? (
-              <EmptyState text="لا توجد بيانات إنتاج بعد. سجّل قراءات الإنتاج من صفحة تحليل الفاقد." />
-            ) : (
+            {productionChart.length === 0 ? <EmptyState text="لا توجد بيانات إنتاج بعد. سجّل قراءات الإنتاج من صفحة تحليل الفاقد." /> : (
               <ResponsiveContainer width="100%" height="100%">
                 <BarChart data={productionChart}>
                   <CartesianGrid strokeDasharray="3 3" opacity={0.2} />
@@ -275,29 +212,13 @@ function Dashboard() {
         </Card>
 
         <Card>
-          <CardHeader>
-            <CardTitle className="text-base flex items-center gap-2">
-              <Leaf className="w-4 h-4 text-emerald-600" />
-              توزيع الاستهلاك حسب الفئة
-            </CardTitle>
-          </CardHeader>
+          <CardHeader><CardTitle className="text-base flex items-center gap-2"><Leaf className="w-4 h-4 text-emerald-600" />توزيع الاستهلاك حسب الفئة</CardTitle></CardHeader>
           <CardContent className="h-72">
-            {k.officialReadings === 0 ? (
-              <EmptyState text="لا توجد قراءات بعد." />
-            ) : (
+            {k.officialReadings === 0 ? <EmptyState text="لا توجد قراءات بعد." /> : (
               <ResponsiveContainer width="100%" height="100%">
                 <PieChart>
-                  <Pie
-                    data={bucketsChart}
-                    dataKey="value"
-                    nameKey="name"
-                    innerRadius={50}
-                    outerRadius={90}
-                    paddingAngle={2}
-                  >
-                    {bucketsChart.map((b, i) => (
-                      <Cell key={i} fill={b.fill} />
-                    ))}
+                  <Pie data={bucketsChart} dataKey="value" nameKey="name" innerRadius={50} outerRadius={90} paddingAngle={2}>
+                    {bucketsChart.map((b, i) => <Cell key={i} fill={b.fill} />)}
                   </Pie>
                   <Tooltip formatter={(v: number) => fmtNum(v)} />
                   <Legend />
@@ -308,46 +229,26 @@ function Dashboard() {
         </Card>
       </div>
 
-      {/* Alerts */}
       <Card>
         <CardHeader className="flex flex-row items-center justify-between space-y-0">
-          <CardTitle className="text-base flex items-center gap-2">
-            <AlertTriangle className="w-4 h-4 text-amber-600" />
-            التنبيهات الذكية النشطة
-          </CardTitle>
-          <Badge variant={k.suspiciousCount > 0 ? "destructive" : "outline"}>
-            {fmtNum(k.suspiciousCount)}
-          </Badge>
+          <CardTitle className="text-base flex items-center gap-2"><AlertTriangle className="w-4 h-4 text-amber-600" />التنبيهات الذكية النشطة</CardTitle>
+          <Badge variant={k.suspiciousCount > 0 ? "destructive" : "outline"}>{fmtNum(k.suspiciousCount)}</Badge>
         </CardHeader>
         <CardContent>
           {k.suspiciousCount === 0 ? (
-            <p className="text-sm text-muted-foreground">
-              لا توجد قراءات شاذة حالياً. النظام يراقب الشبكة تلقائياً ويكشف: التسريب، التلاعب،
-              والقفزات غير الطبيعية (أكثر من ٣× المتوسط).
-            </p>
+            <p className="text-sm text-muted-foreground">لا توجد قراءات شاذة حالياً. النظام يراقب الشبكة تلقائياً ويكشف: التسريب، التلاعب، والقفزات غير الطبيعية (أكثر من ٣× المتوسط).</p>
           ) : (
             <ul className="space-y-2">
-              {readings
-                .filter((r) => r.flag !== "ok")
-                .slice(0, 8)
-                .map((r) => {
-                  const m = meters.find((x) => x.id === r.meter_id);
-                  const c = customers.find((x) => x.id === m?.customer_id);
-                  return (
-                    <li
-                      key={r.id}
-                      className="flex items-center justify-between p-3 rounded-lg bg-muted/40 text-sm"
-                    >
-                      <div className="min-w-0">
-                        <span className="font-semibold">{c?.name ?? "مشترك"}</span>
-                        <span className="text-muted-foreground"> — عداد {m?.number ?? "—"}</span>
-                      </div>
-                      <Badge variant={r.flag === "error" ? "destructive" : "secondary"}>
-                        {r.flag === "error" ? "قراءة خاطئة" : "استهلاك مشبوه"}
-                      </Badge>
-                    </li>
-                  );
-                })}
+              {readings.filter((r) => r.flag !== "ok").slice(0, 8).map((r) => {
+                const m = meters.find((x) => x.id === r.meter_id);
+                const c = customers.find((x) => x.id === m?.customer_id);
+                return (
+                  <li key={r.id} className="flex items-center justify-between p-3 rounded-lg bg-muted/40 text-sm">
+                    <div className="min-w-0"><span className="font-semibold">{c?.name ?? "مشترك"}</span><span className="text-muted-foreground"> — عداد {m?.number ?? "—"}</span></div>
+                    <Badge variant={r.flag === "error" ? "destructive" : "secondary"}>{r.flag === "error" ? "قراءة خاطئة" : "استهلاك مشبوه"}</Badge>
+                  </li>
+                );
+              })}
             </ul>
           )}
         </CardContent>
@@ -356,17 +257,7 @@ function Dashboard() {
   );
 }
 
-function KpiCard({
-  title,
-  icon,
-  tone,
-  children,
-}: {
-  title: string;
-  icon: React.ReactNode;
-  tone: "water" | "eco" | "gold" | "danger";
-  children: React.ReactNode;
-}) {
+function KpiCard({ title, icon, tone, children }: { title: string; icon: React.ReactNode; tone: "water" | "eco" | "gold" | "danger"; children: React.ReactNode }) {
   const toneMap = {
     water: "bg-sky-500/10 text-sky-600 dark:text-sky-400",
     eco: "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400",
@@ -387,18 +278,9 @@ function KpiCard({
 }
 
 function MiniStat({ label, value, danger }: { label: string; value: string; danger?: boolean }) {
-  return (
-    <div className="rounded-md bg-muted/40 px-2 py-1.5">
-      <div className="text-[10px] text-muted-foreground">{label}</div>
-      <div className={`text-xs font-bold truncate ${danger ? "text-destructive" : ""}`}>{value}</div>
-    </div>
-  );
+  return <div className="rounded-md bg-muted/40 px-2 py-1.5"><div className="text-[10px] text-muted-foreground">{label}</div><div className={`text-xs font-bold truncate ${danger ? "text-destructive" : ""}`}>{value}</div></div>;
 }
 
 function EmptyState({ text }: { text: string }) {
-  return (
-    <div className="h-full grid place-items-center text-center">
-      <p className="text-sm text-muted-foreground max-w-xs">{text}</p>
-    </div>
-  );
+  return <div className="h-full grid place-items-center text-center"><p className="text-sm text-muted-foreground max-w-xs">{text}</p></div>;
 }
