@@ -64,14 +64,14 @@ const DATE_RE = /^(19|20)\d{2}$|^\d{1,2}[./-]\d{1,2}([./-]\d{2,4})?$/;
 const UNIT_RE = /^(m3|m³|cbm|kwh|lt|l|kg|bar|°c|mm|cm)$/i;
 // Meter markings such as DN50, Q3 2.5, R160, class/size/year and model labels are
 // identification/specification data, never consumption. They must not become OCR readings.
-const TECHNICAL_NUMBER_RE = /^(?:DN|Q[1234]?|R|PN|MID|ISO|EN|CL(?:ASS)?|CLASS|SIZE|G?\s?\d{1,4}\s?(?:MM|CM)?|20\d{2}|19\d{2})[\s:_-]*[A-Z0-9./-]*$/i;
+const TECHNICAL_NUMBER_RE = /^(?:DN|Q[1234]?|R|PN|MID|ISO|EN|CL(?:ASS)?|CLASS|SIZE)\s*[-:_]?\s*[0-9A-Z./-]+$/i;
 export function isTechnicalNumberToken(text: string): boolean {
   const normalized = normalizeDigits(text).trim().replace(/\s+/g, " ");
   if (!normalized) return false;
-  if (/^(?:DN|Q[1234]?|R|PN|MID|ISO|EN|CLASS|CL)\s*[-:_]?\s*[0-9A-Z./-]+$/i.test(normalized)) return true;
-  if (/^(?:19|20)\d{2}$/.test(normalized)) return true;
+  if (TECHNICAL_NUMBER_RE.test(normalized)) return true;
   if (/^\d{1,4}\s*(?:MM|CM)$/i.test(normalized)) return true;
-  return TECHNICAL_NUMBER_RE.test(normalized);
+  if (/^(?:19|20)\d{2}$/.test(normalized)) return true;
+  return false;
 }
 function classify(text: string, known: string, isReading: boolean): OcrToken["kind"] { const n = normalizeSerial(text); if (known && n === known) return "meter-number"; if (isTechnicalNumberToken(text)) return "other"; if (UNIT_RE.test(text.trim())) return "unit"; if (DATE_RE.test(normalizeDigits(text.trim()))) return "date"; if (isReading) return "reading"; return "other"; }
 function readingShape(text: string) { const t = normalizeDigits(text).replace(/[^\d.,]/g, "").replace(/,/g, "."); if (!/^\d{1,12}(\.\d{1,3})?$/.test(t)) return { ok: false, value: null as number | null }; const digits = t.replace(/\D/g, ""); if (digits.length < 3 || digits.length > 12) return { ok: false, value: null }; const value = Number(t); return Number.isFinite(value) ? { ok: true, value } : { ok: false, value: null as number | null }; }
@@ -157,5 +157,8 @@ export async function recognizeMeterImage(image: Blob | File | string, options: 
   } catch (error) {
     if (error instanceof MeterReadingTimeoutError) throw error;
     throw error;
-  } finally { await worker.terminate(); }
+  } finally {
+    // Cleanup must never extend the user-visible five-second budget.
+    void Promise.race([worker.terminate(), new Promise<void>((resolve) => setTimeout(resolve, 150))]);
+  }
 }
