@@ -11,6 +11,7 @@ export const LOCAL_TESSERACT_OPTIONS = {
   gzip: false,
 } as const;
 
+const LOCAL_TESSERACT_CACHE = "mizan-tesseract";
 const LOCAL_TESSERACT_ASSETS = [
   "/tesseract/worker.min.js",
   "/tesseract/eng.traineddata",
@@ -26,15 +27,15 @@ let prewarmed: Promise<boolean> | null = null;
 
 /**
  * Warm every Tesseract v7 LSTM runtime variant shipped with this repository.
- * This never downloads from a CDN: every URL is same-origin and therefore remains
- * usable when the PWA's local cache is the only available network layer.
+ * The cache name intentionally matches the PWA Workbox runtime cache so there
+ * is one local copy of the OCR runtime rather than two independent caches.
  */
 export function prewarmOcrAssets(): Promise<boolean> {
   if (typeof window === "undefined") return Promise.resolve(false);
   if (!prewarmed) {
     prewarmed = (async () => {
       try {
-        const cache = typeof caches !== "undefined" ? await caches.open("mizan-ocr") : null;
+        const cache = typeof caches !== "undefined" ? await caches.open(LOCAL_TESSERACT_CACHE) : null;
         for (const f of LOCAL_TESSERACT_ASSETS) {
           if (cache && (await cache.match(f))) continue;
           const res = await fetch(f, { cache: "force-cache" });
