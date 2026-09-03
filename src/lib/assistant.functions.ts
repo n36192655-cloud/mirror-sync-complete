@@ -53,7 +53,7 @@ export const askAssistant = createServerFn({ method: "POST" }).middleware([requi
   const tables: AssistantTable[] = [];
   const usedTools: string[] = [];
   const allTools = [...ASSISTANT_TOOLS, ...EXTRA_ASSISTANT_TOOLS];
-  const extraToolNames = new Set(EXTRA_ASSISTANT_TOOLS.map((tool) => tool.function.name));
+  const extraToolNames = new Set<string>(EXTRA_ASSISTANT_TOOLS.map((tool) => tool.function.name));
   for (let step = 0; step < 6; step++) {
     let payload: { choices?: Array<{ message?: { content?: string | null; tool_calls?: ToolCall[] } }> };
     try { payload = (await geminiChat(apiKey, { messages, tools: allTools, temperature: 0.1 })) as typeof payload; }
