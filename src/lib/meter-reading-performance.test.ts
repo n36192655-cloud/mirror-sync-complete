@@ -15,6 +15,14 @@ describe("meter reading performance trace", () => {
     expect(trace.totalMs).toBe(1800);
   });
 
+  test("accepts field assignment exactly at the five-second SLA boundary", () => {
+    const trace = createMeterReadingPerformance(1000);
+    markCaptureCompleted(trace, 1100);
+    markProcessingStarted(trace, 1200);
+    markFieldAssigned(trace, 6000);
+    expect(trace.totalMs).toBe(5000);
+  });
+
   test("hard-fails a field assignment beyond the five-second SLA", () => {
     const trace = createMeterReadingPerformance(1000);
     markCaptureCompleted(trace, 1100);
