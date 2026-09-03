@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { normalizeDigits, normalizeSerial } from "./meter-ocr";
+import { normalizeDigits, normalizeSerial, serialFoundInOcrText } from "./meter-ocr";
 
 describe("meter OCR identity normalization", () => {
   test("canonicalizes Arabic and Persian digits", () => {
@@ -16,5 +16,10 @@ describe("meter OCR identity normalization", () => {
   test("does not turn partial serials into a match", () => {
     expect(normalizeSerial("12345")).not.toBe(normalizeSerial("123456"));
     expect(normalizeSerial("ABC123")).not.toBe(normalizeSerial("ABC1234"));
+  });
+
+  test("recognizes an exact serial when OCR split it across a line", () => {
+    expect(serialFoundInOcrText("Water Meter\nAB 12-٣٤\nReading 001234", "AB-12-34")).toBe(true);
+    expect(serialFoundInOcrText("Water Meter\nAB 12-٣٥\nReading 001234", "AB-12-34")).toBe(false);
   });
 });
