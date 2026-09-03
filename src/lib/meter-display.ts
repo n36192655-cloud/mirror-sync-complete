@@ -57,7 +57,11 @@ export interface MeterReadingParse {
 
 export function parseMeterReading(value: unknown): MeterReadingParse {
   if (typeof value !== "string" && typeof value !== "number") return { value: null, normalized: "", valid: false };
-  const normalized = normalizeMeterDigits(String(value)).trim().replace(/\s/g, "").replace(/,/g, ".");
+  const normalized = normalizeMeterDigits(String(value))
+    .trim()
+    .replace(/\s/g, "")
+    .replace(/[٫﹒．]/g, ".")
+    .replace(/,/g, ".");
   if (!/^(?:\d{1,12}|\d{1,12}\.\d{1,3})$/.test(normalized)) return { value: null, normalized, valid: false };
   const parsed = Number(normalized);
   if (!Number.isFinite(parsed)) return { value: null, normalized, valid: false };
@@ -65,5 +69,5 @@ export function parseMeterReading(value: unknown): MeterReadingParse {
 }
 
 export function isDisplayTypeRequiringStrongEvidence(type: MeterDisplayType): boolean {
-  return type === "analog_dial" || type === "multi_register" || type === "smart_display";
+  return type === "analog_dial" || type === "multi_register" || type === "smart_display" || type === "black_red_register";
 }
