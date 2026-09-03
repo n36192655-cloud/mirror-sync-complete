@@ -1,5 +1,7 @@
 import { createServerFn } from "@tanstack/react-start";
 import { requireSupabaseAuth } from "@/integrations/supabase/auth-middleware";
+import { normalizeMeterDisplayType, type MeterDisplayType } from "./meter-display";
+import { normalizeMeterTechnologyType, requiresStrongVisionEvidence, type MeterTechnologyType } from "./meter-technology";
 
 export interface MeterVisionResult {
   readingValue: number | null;
@@ -8,6 +10,8 @@ export interface MeterVisionResult {
   otherNumbers: string[];
   ambiguous: boolean;
   serialMatch: "match" | "mismatch" | "unknown";
+  displayType: MeterDisplayType;
+  technologyType: MeterTechnologyType;
 }
 
 interface VisionInput { imageDataUrl: string; knownMeterNumber?: string; previousReading?: number | null; }
@@ -37,18 +41,20 @@ export const readMeterFromImage = createServerFn({ method: "POST" })
     const apiKey: string = process.env["GEMINI_API_KEY"] ?? "";
     if (!apiKey) throw new Error("خدمة الذكاء الاصطناعي غير مهيأة (GEMINI_API_KEY مفقود).");
     const hints = [data.knownMeterNumber ? `رقم العداد المتوقع: ${data.knownMeterNumber}` : null, data.previousReading != null ? `القراءة السابقة: ${data.previousReading}` : null].filter(Boolean).join("\n");
-    const system = `أنت نظام رؤية متخصص في قراءة عدادات المياه من الصور الواقعية.
+    const system = `أنت نظام رؤية متخصص في قراءة جميع أنواع عدادات المياه الواقعية، بما فيها العدادات الشائعة في اليمن.
+قبل القراءة صنّف العداد إلى technologyType من: mechanical_multi_jet, mechanical_single_jet, mechanical_positive_displacement, mechanical_propeller_bulk, prepaid_smart, ultrasonic, electromagnetic, smart_ami, unknown.
+وصنّف العرض إلى displayType من: mechanical_roller, digital_lcd, digital_led, black_red_register, multi_register, analog_dial, smart_display, unknown.
 نفّذ مهمتين مستقلتين لكن مترابطتين: إثبات هوية العداد من الرقم التسلسلي المطبوع، ثم استخراج قراءة الاستهلاك من آلية العرض.
 قواعد الهوية: الرقم التسلسلي هو الرقم المطبوع على جسم العداد أو الملصق المرتبط به. لا تعتبر رقم القراءة أو السنة أو التاريخ أو DN/Q3/R160 أو أي رقم تقني رقماً للعداد. لا تخمّن أي خانة. إذا لم يكن الرقم التسلسلي واضحاً بالكامل فاجعل meterNumber فارغاً. لا تضف أو تحذف أصفاراً ولا تصحح حرفاً مشكوكاً فيه.
-قواعد القراءة: اقرأ خانات الاستهلاك من اليسار إلى اليمين كما تظهر. لا تخلط الرقم التسلسلي أو الأرقام التقنية مع القراءة. حافظ على الخانات الصحيحة كاملة. إذا كان أي رقم غير محسوم بسبب الضبابية أو الانعكاس أو الحجب فاجعل ambiguous=true وreadingDigits فارغاً. يجب أن تمثل readingDigits القراءة النهائية فقط. confidence من 0 إلى 100 ويعبّر عن وضوح الدليل المرئي، وليس عن التخمين. لا تجعل القراءة أقل من السابقة عند وجودها. أعد JSON فقط.`;
-    const schema = { type: "object", additionalProperties: false, properties: { readingDigits: { type: "string" }, confidence: { type: "number" }, meterNumber: { type: "string" }, otherNumbers: { type: "array", items: { type: "string" } }, ambiguous: { type: "boolean" } }, required: ["readingDigits", "confidence", "meterNumber", "otherNumbers", "ambiguous"] };
-    if (!canonicalMeterNumber(data.knownMeterNumber ?? "")) return { readingValue: null, confidence: 0, meterNumber: null, otherNumbers: [], ambiguous: true, serialMatch: "unknown" };
+قواعد القراءة: اقرأ خانات الاستهلاك من اليسار إلى اليمين كما تظهر. لا تخلط الرقم التسلسلي أو الأرقام التقنية مع القراءة. حافظ على الخانات الصحيحة كاملة. إذا كان أي رقم غير محسوم بسبب الضبابية أو الانعكاس أو الحجب فاجعل ambiguous=true وreadingDigits فارغاً. يجب أن تمثل readingDigits القراءة النهائية فقط. confidence من 0 إلى 100 ويعبّر عن وضوح الدليل المرئي، وليس عن التخمين. للعداد analog_dial أو multi_register أو smart_display أو التقنيات الإلكترونية/الذكية، كن محافظاً جداً: إذا لم تكن كل الخانات/المؤشرات المطلوبة واضحة فلا تخمّن. لا تجعل القراءة أقل من السابقة عند وجودها. أعد JSON فقط.`;
+    const schema = { type: "object", additionalProperties: false, properties: { readingDigits: { type: "string" }, confidence: { type: "number" }, meterNumber: { type: "string" }, otherNumbers: { type: "array", items: { type: "string" } }, ambiguous: { type: "boolean" }, displayType: { type: "string" }, technologyType: { type: "string" } }, required: ["readingDigits", "confidence", "meterNumber", "otherNumbers", "ambiguous", "displayType", "technologyType"] };
+    if (!canonicalMeterNumber(data.knownMeterNumber ?? "")) return { readingValue: null, confidence: 0, meterNumber: null, otherNumbers: [], ambiguous: true, serialMatch: "unknown", displayType: "unknown", technologyType: "unknown" };
 
     const { geminiChat, GeminiError } = await import("./gemini.server");
     let response: { choices?: Array<{ message?: { content?: string } }> };
     try {
       response = (await Promise.race([
-        geminiChat(apiKey, { messages: [{ role: "system", content: system }, { role: "user", content: [{ type: "text", text: `حلّل صورة عداد المياه. أثبت هوية العداد أولاً ثم استخرج قراءة الاستهلاك فقط.\n${hints}` }, { type: "image_url", image_url: { url: data.imageDataUrl } }] }], response_format: { type: "json_schema", json_schema: { name: "meter_reading", schema } } }),
+        geminiChat(apiKey, { messages: [{ role: "system", content: system }, { role: "user", content: [{ type: "text", text: `حلّل صورة عداد المياه. صنّف التقنية ونوع العرض، ثم أثبت هوية العداد، ثم استخرج قراءة الاستهلاك فقط.\n${hints}` }, { type: "image_url", image_url: { url: data.imageDataUrl } }] }], response_format: { type: "json_schema", json_schema: { name: "meter_reading", schema } } }),
         new Promise<never>((_, reject) => setTimeout(() => reject(new Error("AI_TIMEOUT")), 3000)),
       ])) as typeof response;
     } catch (error) {
@@ -73,7 +79,11 @@ export const readMeterFromImage = createServerFn({ method: "POST" })
     const meterNumber = typeof parsed.meterNumber === "string" && parsed.meterNumber.trim() ? parsed.meterNumber.trim() : null;
     const otherNumbers = Array.isArray(parsed.otherNumbers) ? parsed.otherNumbers.map(String).filter(Boolean).slice(0, 12) : [];
     const serialMatch = exactSerialMatch(data.knownMeterNumber, [meterNumber, ...otherNumbers]);
+    const displayType = normalizeMeterDisplayType(parsed.displayType);
+    const technologyType = normalizeMeterTechnologyType(parsed.technologyType);
     const belowPrevious = data.previousReading != null && readingValue != null && readingValue < data.previousReading;
-    const ambiguous = parsed.ambiguous === true || readingValue == null || belowPrevious || confidence < 85;
-    return { readingValue: ambiguous ? null : readingValue, confidence, meterNumber, otherNumbers, ambiguous, serialMatch };
+    const strongEvidenceRequired = requiresStrongVisionEvidence(technologyType, displayType);
+    const confidenceThreshold = strongEvidenceRequired ? 92 : 85;
+    const ambiguous = parsed.ambiguous === true || readingValue == null || belowPrevious || confidence < confidenceThreshold || serialMatch !== "match";
+    return { readingValue: ambiguous ? null : readingValue, confidence, meterNumber, otherNumbers, ambiguous, serialMatch, displayType, technologyType };
   });
