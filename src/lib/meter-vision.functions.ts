@@ -24,7 +24,20 @@ function validate(input: unknown): VisionInput {
   const previousReading = typeof obj.previousReading === "number" && Number.isFinite(obj.previousReading) ? obj.previousReading : null;
   return { imageDataUrl, knownMeterNumber, previousReading };
 }
-function normalizeDigits(value: string): string { return value.replace(/[٠-٩۰-۹]/g, (d) => { const code = d.charCodeAt(0); return code >= 0x0660 && code <= 0x0669 ? String(code - 0x0660) : String(code - 0x06f0); }); }
+
+const DIGIT_RANGES: Array<[number, number]> = [
+  [0x0660, 0x0669], [0x06f0, 0x06f9], [0x0966, 0x096f], [0x09e6, 0x09ef],
+  [0x0ae6, 0x0aef], [0x0a66, 0x0a6f], [0x0be6, 0x0bef], [0x0c66, 0x0c6f],
+  [0x0ce6, 0x0cef], [0x0d66, 0x0d6f], [0x0b66, 0x0b6f],
+];
+const DIGIT_RE = /[٠-٩۰-۹०-९০-৯૦-૯੦-੯௦-௯౦-౯೦-೯൦-൯୦-୯]/g;
+function normalizeDigits(value: string): string {
+  return value.replace(DIGIT_RE, (digit) => {
+    const code = digit.charCodeAt(0);
+    for (const [start, end] of DIGIT_RANGES) if (code >= start && code <= end) return String(code - start);
+    return digit;
+  });
+}
 function canonicalMeterNumber(value: string): string { return normalizeDigits(value).normalize("NFKC").trim().toUpperCase().replace(/[\u2010-\u2015\u2212]/g, "-").replace(/[\s_-]+/g, "-").replace(/^-+|-+$/g, ""); }
 function exactSerialMatch(knownMeterNumber: string | undefined, candidates: Array<string | null | undefined>): "match" | "mismatch" | "unknown" {
   const known = canonicalMeterNumber(knownMeterNumber ?? "");
