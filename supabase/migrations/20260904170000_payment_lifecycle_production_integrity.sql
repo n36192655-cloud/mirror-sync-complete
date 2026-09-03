@@ -11,8 +11,6 @@
 
 BEGIN;
 
--- The closed-period guard is a production invariant. Refuse deployment rather
--- than silently deploying without it if the expected function is absent.
 DO $$
 BEGIN
   IF to_regprocedure('public.is_period_closed(uuid,date)') IS NULL THEN
@@ -47,16 +45,24 @@ BEGIN
 END;
 $$;
 
-ALTER TABLE public.water_bills
-  ADD CONSTRAINT water_bills_paid_amount_range
-  CHECK (
-    paid_amount IS NULL
-    OR (paid_amount >= 0 AND paid_amount <= COALESCE(total, 0) + 0.0001)
-  );
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1
+    FROM pg_constraint
+    WHERE conname = 'water_bills_paid_amount_range'
+      AND conrelid = 'public.water_bills'::regclass
+  ) THEN
+    ALTER TABLE public.water_bills
+      ADD CONSTRAINT water_bills_paid_amount_range
+      CHECK (
+        paid_amount IS NULL
+        OR (paid_amount >= 0 AND paid_amount <= COALESCE(total, 0) + 0.0001)
+      );
+  END IF;
+END;
+$$;
 
--- Canonical payment submission. The bill row lock serializes payment
--- reservations. A payment is posted in the current collection period; an old
--- invoice must not force a valid current-period payment into a closed period.
 CREATE OR REPLACE FUNCTION public.record_payment(
   _bill_id UUID,
   _amount NUMERIC,
@@ -156,8 +162,6 @@ $$;
 REVOKE ALL ON FUNCTION public.record_payment(UUID,NUMERIC,TEXT,TEXT) FROM PUBLIC, anon;
 GRANT EXECUTE ON FUNCTION public.record_payment(UUID,NUMERIC,TEXT,TEXT) TO authenticated;
 
--- Canonical atomic approval. The bill is locked before calculating the
--- approved total, so concurrent approvals serialize on the same bill.
 CREATE OR REPLACE FUNCTION public.approve_payment(_payment_id UUID)
 RETURNS VOID
 LANGUAGE plpgsql
@@ -267,8 +271,6 @@ $$;
 REVOKE ALL ON FUNCTION public.approve_payment(UUID) FROM PUBLIC, anon;
 GRANT EXECUTE ON FUNCTION public.approve_payment(UUID) TO authenticated;
 
--- There must be exactly one accounting implementation. Keep the legacy RPC
--- name only as a compatibility entry point for clients that still call it.
 CREATE OR REPLACE FUNCTION public.approve_payment_transaction(_payment_id UUID)
 RETURNS VOID
 LANGUAGE plpgsql
