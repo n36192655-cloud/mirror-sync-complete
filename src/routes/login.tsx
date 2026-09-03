@@ -2,6 +2,8 @@ import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useState, useEffect } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { useAuth, defaultRouteFor, type Role } from "@/lib/auth";
 import { CopyrightFooter } from "@/components/footer";
 import { Droplets, Loader2, UserCog, ClipboardList, Wallet } from "lucide-react";
@@ -33,7 +35,6 @@ type QuickAccount = {
   label: string;
   hint: string;
   username: string;
-  password: string;
   icon: typeof UserCog;
 };
 
@@ -43,7 +44,6 @@ const ACCOUNTS: QuickAccount[] = [
     label: "مدير مشروع",
     hint: "إدارة كاملة للمشروع والتقارير والمستخدمين",
     username: "manager",
-    password: "Manager#2026!",
     icon: UserCog,
   },
   {
@@ -51,7 +51,6 @@ const ACCOUNTS: QuickAccount[] = [
     label: "قارئ عدادات",
     hint: "إدخال قراءات العدادات الميدانية",
     username: "reader",
-    password: "Reader#2026!",
     icon: ClipboardList,
   },
   {
@@ -59,7 +58,6 @@ const ACCOUNTS: QuickAccount[] = [
     label: "محصل",
     hint: "إصدار الفواتير وتحصيل المدفوعات",
     username: "collector",
-    password: "Collector#2026!",
     icon: Wallet,
   },
 ];
@@ -67,6 +65,8 @@ const ACCOUNTS: QuickAccount[] = [
 function LoginPage() {
   const navigate = useNavigate();
   const { user, loginWithIdentifier, loginError } = useAuth();
+  const [identifier, setIdentifier] = useState("");
+  const [password, setPassword] = useState("");
   const [busyKey, setBusyKey] = useState<Role | null>(null);
 
   useEffect(() => {
@@ -74,19 +74,25 @@ function LoginPage() {
     navigate({ to: defaultRouteFor(user.role), replace: true });
   }, [user, navigate]);
 
-  async function pickAccount(acc: QuickAccount) {
+  function selectAccount(acc: QuickAccount) {
     if (busyKey) return;
-    setBusyKey(acc.key);
+    setIdentifier(acc.username);
+  }
+
+  async function submitLogin() {
+    if (busyKey) return;
+    const account = ACCOUNTS.find((acc) => acc.username === identifier.trim());
+    setBusyKey(account?.key ?? "manager");
     try {
-      const ok = await loginWithIdentifier(acc.username, acc.password);
+      const ok = await loginWithIdentifier(identifier, password);
       if (!ok) {
         const msg =
           loginError === "device_limit_exceeded"
             ? "تم تجاوز الحد المسموح من الأجهزة لهذا الحساب"
-            : "تعذر الدخول بهذا الحساب";
+            : "تعذر الدخول — تحقق من اسم المستخدم وكلمة المرور";
         toast.error(msg);
       } else {
-        toast.success(`تم الدخول بحساب ${acc.label}`);
+        toast.success("تم تسجيل الدخول بنجاح");
       }
     } finally {
       setBusyKey(null);
@@ -109,7 +115,7 @@ function LoginPage() {
             </div>
             <CardTitle className="text-2xl">منصة ميزان</CardTitle>
             <p className="text-xs text-muted-foreground mt-1">
-              اختر دورك للدخول المباشر إلى النظام
+              اختر الحساب ثم أدخل كلمة المرور
             </p>
           </CardHeader>
           <CardContent>
@@ -117,39 +123,70 @@ function LoginPage() {
               {ACCOUNTS.map((acc) => {
                 const Icon = acc.icon;
                 const busy = busyKey === acc.key;
-                const disabled = busyKey !== null;
+                const selected = identifier === acc.username;
                 return (
                   <Button
                     key={acc.key}
                     type="button"
-                    variant="outline"
+                    variant={selected ? "secondary" : "outline"}
                     size="lg"
                     className="w-full h-auto justify-start gap-3 py-3 px-4"
-                    onClick={() => pickAccount(acc)}
-                    disabled={disabled}
+                    onClick={() => selectAccount(acc)}
+                    disabled={busyKey !== null}
                   >
                     <div
                       className="w-10 h-10 shrink-0 rounded-xl grid place-items-center text-white"
                       style={{ background: "linear-gradient(135deg, var(--water) 0%, #0ea5e9 100%)" }}
                     >
-                      {busy ? (
-                        <Loader2 className="w-5 h-5 animate-spin" />
-                      ) : (
-                        <Icon className="w-5 h-5" />
-                      )}
+                      {busy ? <Loader2 className="w-5 h-5 animate-spin" /> : <Icon className="w-5 h-5" />}
                     </div>
                     <div className="text-start flex-1">
                       <div className="font-bold text-base">{acc.label}</div>
-                      <div className="text-[11px] text-muted-foreground font-normal">
-                        {acc.hint}
-                      </div>
+                      <div className="text-[11px] text-muted-foreground font-normal">{acc.hint}</div>
                     </div>
                   </Button>
                 );
               })}
             </div>
+
+            <div className="space-y-3 mt-5">
+              <div>
+                <Label htmlFor="identifier">اسم المستخدم أو البريد</Label>
+                <Input
+                  id="identifier"
+                  autoComplete="username"
+                  value={identifier}
+                  onChange={(e) => setIdentifier(e.target.value)}
+                  placeholder="اسم المستخدم"
+                />
+              </div>
+              <div>
+                <Label htmlFor="password">كلمة المرور</Label>
+                <Input
+                  id="password"
+                  type="password"
+                  autoComplete="current-password"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  placeholder="أدخل كلمة المرور"
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") void submitLogin();
+                  }}
+                />
+              </div>
+              <Button
+                type="button"
+                className="w-full"
+                onClick={() => void submitLogin()}
+                disabled={!identifier.trim() || !password || busyKey !== null}
+              >
+                {busyKey ? <Loader2 className="w-4 h-4 animate-spin ms-1" /> : null}
+                دخول آمن
+              </Button>
+            </div>
+
             <p className="text-[11px] text-muted-foreground text-center pt-4">
-              الدخول مباشر ومزامنة البيانات بين الحسابات الثلاثة تلقائية.
+              لا تُخزّن كلمات مرور الحسابات التجريبية داخل التطبيق أو المستودع؛ استخدم حسابات مُدارة من مزود المصادقة.
             </p>
           </CardContent>
         </Card>
