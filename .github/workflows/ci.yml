@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main, feat/meter-reading-hardening, hotfix/production-critical-2026-09-03]
+    branches: [main, feat/meter-reading-hardening, feat/meter-types-final4-20260904, hotfix/production-critical-2026-09-03]
   pull_request:
     branches: [main]
   workflow_dispatch:
