@@ -49,7 +49,7 @@ export const readMeterFromImage = createServerFn({ method: "POST" })
     try {
       response = (await Promise.race([
         geminiChat(apiKey, { messages: [{ role: "system", content: system }, { role: "user", content: [{ type: "text", text: `حلّل صورة عداد المياه. أثبت هوية العداد أولاً ثم استخرج قراءة الاستهلاك فقط.\n${hints}` }, { type: "image_url", image_url: { url: data.imageDataUrl } }] }], response_format: { type: "json_schema", json_schema: { name: "meter_reading", schema } } }),
-        new Promise<never>((_, reject) => setTimeout(() => reject(new Error("AI_TIMEOUT")), 3200)),
+        new Promise<never>((_, reject) => setTimeout(() => reject(new Error("AI_TIMEOUT")), 3000)),
       ])) as typeof response;
     } catch (error) {
       const status = error instanceof GeminiError ? error.status : 0;
