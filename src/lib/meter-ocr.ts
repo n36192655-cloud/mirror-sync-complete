@@ -11,23 +11,40 @@ export const LOCAL_TESSERACT_OPTIONS = {
   gzip: false,
 } as const;
 
+const LOCAL_TESSERACT_ASSETS = [
+  "/tesseract/worker.min.js",
+  "/tesseract/eng.traineddata",
+  "/tesseract/tesseract-core-lstm.wasm",
+  "/tesseract/tesseract-core-lstm.wasm.js",
+  "/tesseract/tesseract-core-relaxedsimd-lstm.wasm",
+  "/tesseract/tesseract-core-relaxedsimd-lstm.wasm.js",
+  "/tesseract/tesseract-core-simd-lstm.wasm",
+  "/tesseract/tesseract-core-simd-lstm.wasm.js",
+] as const;
+
 let prewarmed: Promise<boolean> | null = null;
 
+/**
+ * Warm every Tesseract v7 LSTM runtime variant shipped with this repository.
+ * This never downloads from a CDN: every URL is same-origin and therefore remains
+ * usable when the PWA's local cache is the only available network layer.
+ */
 export function prewarmOcrAssets(): Promise<boolean> {
   if (typeof window === "undefined") return Promise.resolve(false);
   if (!prewarmed) {
     prewarmed = (async () => {
       try {
-        const files = ["/tesseract/worker.min.js", "/tesseract/eng.traineddata", "/tesseract/tesseract-core-simd-lstm.wasm", "/tesseract/tesseract-core-simd-lstm.wasm.js"];
         const cache = typeof caches !== "undefined" ? await caches.open("mizan-ocr") : null;
-        for (const f of files) {
+        for (const f of LOCAL_TESSERACT_ASSETS) {
           if (cache && (await cache.match(f))) continue;
           const res = await fetch(f, { cache: "force-cache" });
           if (!res.ok) return false;
           if (cache) await cache.put(f, res.clone());
         }
         return true;
-      } catch { return false; }
+      } catch {
+        return false;
+      }
     })();
   }
   return prewarmed;
