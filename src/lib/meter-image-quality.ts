@@ -4,6 +4,7 @@ export interface MeterImageQuality {
   meanLuma: number;
   clippedFraction: number;
   edgeEnergy: number;
+  focusScore: number;
 }
 
 const MIN_SIDE = 640;
@@ -11,6 +12,7 @@ const MIN_LUMA = 18;
 const MAX_LUMA = 242;
 const MAX_CLIPPED_FRACTION = 0.55;
 const MIN_EDGE_ENERGY = 0.0015;
+const MIN_FOCUS_SCORE = 8;
 
 const qualityCache = new WeakMap<Blob, Promise<MeterImageQuality>>();
 
@@ -59,11 +61,16 @@ async function assessMeterImageQualityInternal(image: Blob | File | string): Pro
     }
     let edgeEnergy = 0;
     let edgeSamples = 0;
-    for (let y = 0; y < height; y += 2) {
-      for (let x = 0; x < width; x += 2) {
+    let laplacianEnergy = 0;
+    let laplacianSamples = 0;
+    for (let y = 1; y < height - 1; y += 2) {
+      for (let x = 1; x < width - 1; x += 2) {
         const i = y * width + x;
-        if (x + 1 < width) { edgeEnergy += Math.abs(gray[i] - gray[i + 1]) / 255; edgeSamples += 1; }
-        if (y + 1 < height) { edgeEnergy += Math.abs(gray[i] - gray[i + width]) / 255; edgeSamples += 1; }
+        edgeEnergy += (Math.abs(gray[i] - gray[i + 1]) + Math.abs(gray[i] - gray[i - width])) / 510;
+        edgeSamples += 1;
+        const laplacian = gray[i - 1] + gray[i + 1] + gray[i - width] + gray[i + width] - 4 * gray[i];
+        laplacianEnergy += Math.abs(laplacian);
+        laplacianSamples += 1;
       }
     }
     const samples = width * height;
@@ -73,6 +80,7 @@ async function assessMeterImageQualityInternal(image: Blob | File | string): Pro
       meanLuma: samples ? sum / samples : 0,
       clippedFraction: samples ? clipped / samples : 1,
       edgeEnergy: edgeSamples ? edgeEnergy / edgeSamples : 0,
+      focusScore: laplacianSamples ? laplacianEnergy / laplacianSamples : 0,
     };
   } finally {
     if (typeof image !== "string") URL.revokeObjectURL(src);
@@ -85,6 +93,6 @@ export async function assertMeterImageQuality(image: Blob | File | string): Prom
   if (quality.meanLuma < MIN_LUMA) throw new Error("الصورة مظلمة جداً لقراءة موثوقة. حسّن الإضاءة وأعد التصوير.");
   if (quality.meanLuma > MAX_LUMA) throw new Error("الصورة شديدة السطوع أو الانعكاس. غيّر زاوية الهاتف وأعد التصوير.");
   if (quality.clippedFraction > MAX_CLIPPED_FRACTION) throw new Error("جزء كبير من الصورة محجوب بالسطوع أو الظلام. أعد التصوير بوضوح أكبر.");
-  if (quality.edgeEnergy < MIN_EDGE_ENERGY) throw new Error("الصورة غير واضحة بما يكفي لإثبات الأرقام. ثبّت الهاتف وقرّب العداد ثم أعد التصوير.");
+  if (quality.edgeEnergy < MIN_EDGE_ENERGY || quality.focusScore < MIN_FOCUS_SCORE) throw new Error("الصورة غير واضحة بما يكفي لإثبات الأرقام. ثبّت الهاتف وقرّب العداد ثم أعد التصوير.");
   return quality;
 }
