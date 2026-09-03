@@ -12,6 +12,7 @@ import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as AssistantRouteImport } from './routes/assistant'
 import { Route as BillsRouteImport } from './routes/bills'
+import { Route as CostsRouteImport } from './routes/costs'
 import { Route as CustomersRouteImport } from './routes/customers'
 import { Route as LoginRouteImport } from './routes/login'
 import { Route as LossAnalysisRouteImport } from './routes/loss-analysis'
@@ -35,6 +36,11 @@ const AssistantRoute = AssistantRouteImport.update({
 const BillsRoute = BillsRouteImport.update({
   id: '/bills',
   path: '/bills',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const CostsRoute = CostsRouteImport.update({
+  id: '/costs',
+  path: '/costs',
   getParentRoute: () => rootRouteImport,
 } as any)
 const CustomersRoute = CustomersRouteImport.update({
@@ -87,6 +93,7 @@ export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/assistant': typeof AssistantRoute
   '/bills': typeof BillsRoute
+  '/costs': typeof CostsRoute
   '/customers': typeof CustomersRoute
   '/login': typeof LoginRoute
   '/loss-analysis': typeof LossAnalysisRoute
@@ -101,6 +108,7 @@ export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/assistant': typeof AssistantRoute
   '/bills': typeof BillsRoute
+  '/costs': typeof CostsRoute
   '/customers': typeof CustomersRoute
   '/login': typeof LoginRoute
   '/loss-analysis': typeof LossAnalysisRoute
@@ -116,6 +124,7 @@ export interface FileRoutesById {
   '/': typeof IndexRoute
   '/assistant': typeof AssistantRoute
   '/bills': typeof BillsRoute
+  '/costs': typeof CostsRoute
   '/customers': typeof CustomersRoute
   '/login': typeof LoginRoute
   '/loss-analysis': typeof LossAnalysisRoute
@@ -132,6 +141,7 @@ export interface FileRouteTypes {
     | '/'
     | '/assistant'
     | '/bills'
+    | '/costs'
     | '/customers'
     | '/login'
     | '/loss-analysis'
@@ -146,6 +156,7 @@ export interface FileRouteTypes {
     | '/'
     | '/assistant'
     | '/bills'
+    | '/costs'
     | '/customers'
     | '/login'
     | '/loss-analysis'
@@ -160,6 +171,7 @@ export interface FileRouteTypes {
     | '/'
     | '/assistant'
     | '/bills'
+    | '/costs'
     | '/customers'
     | '/login'
     | '/loss-analysis'
@@ -175,6 +187,7 @@ export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   AssistantRoute: typeof AssistantRoute
   BillsRoute: typeof BillsRoute
+  CostsRoute: typeof CostsRoute
   CustomersRoute: typeof CustomersRoute
   LoginRoute: typeof LoginRoute
   LossAnalysisRoute: typeof LossAnalysisRoute
@@ -207,6 +220,13 @@ declare module '@tanstack/react-router' {
       path: '/bills'
       fullPath: '/bills'
       preLoaderRoute: typeof BillsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/costs': {
+      id: '/costs'
+      path: '/costs'
+      fullPath: '/costs'
+      preLoaderRoute: typeof CostsRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/customers': {
@@ -279,6 +299,7 @@ const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   AssistantRoute: AssistantRoute,
   BillsRoute: BillsRoute,
+  CostsRoute: CostsRoute,
   CustomersRoute: CustomersRoute,
   LoginRoute: LoginRoute,
   LossAnalysisRoute: LossAnalysisRoute,
