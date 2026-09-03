@@ -7,8 +7,11 @@ import {
 } from "./meter-display";
 
 describe("meter display primitives", () => {
-  test("normalizes Arabic and Persian digits", () => {
+  test("normalizes Arabic, Persian and common Indic digits", () => {
     expect(normalizeMeterDigits("١٢٣٤۵٦")).toBe("123456");
+    expect(normalizeMeterDigits("१२३४५६")).toBe("123456");
+    expect(normalizeMeterDigits("১২৩৪৫৬")).toBe("123456");
+    expect(normalizeMeterDigits("૧૨૩૪૫૬")).toBe("123456");
   });
 
   test("accepts all supported display classifications and rejects unknown values", () => {
@@ -19,6 +22,7 @@ describe("meter display primitives", () => {
 
   test("parses decimal readings without changing digit meaning", () => {
     expect(parseMeterReading("١٢٣,٤٥")).toEqual({ value: 123.45, normalized: "123.45", valid: true });
+    expect(parseMeterReading("१२३,४५")).toEqual({ value: 123.45, normalized: "123.45", valid: true });
     expect(parseMeterReading("123456789012").value).toBe(123456789012);
   });
 
