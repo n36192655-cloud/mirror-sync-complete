@@ -94,9 +94,9 @@ export const MeterCamera: React.FC<MeterCameraProps> = ({ onCapture, onClear, in
 
   const stopCamera = useCallback(() => {
     const stream = streamRef.current;
-    if (stream) { stream.getTracks().forEach((track) => { try { track.stop(); } catch {} }); streamRef.current = null; }
+    if (stream) { stream.getTracks().forEach((track) => { try { track.stop(); } catch (error) { console.debug("[Mizan] Camera track stop skipped", error); } }); streamRef.current = null; }
     const video = videoRef.current;
-    if (video) { try { video.pause(); } catch {} video.srcObject = null; video.removeAttribute("src"); video.load(); }
+    if (video) { try { video.pause(); } catch (error) { console.debug("[Mizan] Video pause skipped", error); } video.srcObject = null; video.removeAttribute("src"); video.load(); }
     setCameraResolution(null); setIsStreamReady(false); setIsCameraActive(false);
   }, []);
   const cleanupPreview = useCallback(() => { const url = previewUrlRef.current; if (url && url.startsWith("blob:")) URL.revokeObjectURL(url); previewUrlRef.current = null; }, []);
