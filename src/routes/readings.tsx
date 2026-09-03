@@ -10,11 +10,12 @@ import { Badge } from "@/components/ui/badge";
 import { toast } from "sonner";
 import { Camera, CheckCircle2, Image as ImageIcon, Loader2, MapPin, RefreshCw, ShieldCheck, XCircle } from "lucide-react";
 import { fmtYER } from "@/lib/pricing";
-import { MeterCamera } from "@/components/meter-camera";
+import { MeterCamera, type MeterCaptureTiming } from "@/components/meter-camera";
 import { getGeoFix, type GeoFix } from "@/lib/geolocation";
 import { addPending, isNetworkError, syncPending, useOfflineQueue, type PendingReading } from "@/lib/sync";
 import { readFieldCache, requestPersistentStorage, saveFieldCache } from "@/lib/offline-db";
 import { createMeterReadingDeadline, MeterReadingTimeoutError, withMeterReadingDeadline } from "@/lib/meter-reading-deadline";
+import { createMeterReadingPerformance, markCaptureCompleted, markFieldAssigned, markProcessingStarted } from "@/lib/meter-reading-performance";
 import type { Database } from "@/integrations/supabase/types";
 
 type CustomerRow = Database["public"]["Tables"]["customers"]["Row"];
@@ -27,10 +28,7 @@ const normalizeSerial = (v: string) => v.normalize("NFKC").trim().toUpperCase().
 const extensionFor = (type: string) => type === "image/png" ? "png" : type === "image/webp" ? "webp" : "jpg";
 const localDateStamp = () => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`; };
 
-export const Route = createFileRoute("/readings")({
-  head: () => ({ meta: [{ title: "القراءات — ميزان" }] }),
-  component: ReadingsPage,
-});
+export const Route = createFileRoute("/readings")({ head: () => ({ meta: [{ title: "القراءات — ميزان" }] }), component: ReadingsPage });
 
 function ReadingsPage() {
   const { user } = useAuth();
@@ -79,29 +77,38 @@ function ReadingsPage() {
   const results = useMemo(() => { const query = q.trim().toLowerCase(); if (!query) return customers.slice(0, 10); const compact = (v: string) => v.toLowerCase().replace(/[\s-]/g, ""); return customers.filter(c => { const meter = meterByCustomer.get(c.id)?.number ?? ""; return c.name.toLowerCase().includes(query) || compact(meter).includes(compact(query)) || (!!c.phone && c.phone.includes(query)); }).slice(0, 15); }, [q, customers, meterByCustomer]);
   function pickCustomer(c: CustomerRow) { captureSequenceRef.current += 1; const meter = meterByCustomer.get(c.id); setCustomerId(c.id); setMeterId(meter?.id ?? null); setCurrent(""); setPhotoBlob(null); setPhotoPreview(undefined); setOcrSerial(undefined); setOcrReading(null); setCameraOpen(false); if (!meter) toast.error("لا يوجد عداد مرتبط بهذا المشترك"); }
   function clearPhoto() { captureSequenceRef.current += 1; setPhotoBlob(null); setPhotoPreview(undefined); setOcrSerial(undefined); setOcrReading(null); setCurrent(""); }
-  async function handleCapture(file: File, previewUrl: string) {
+
+  async function handleCapture(file: File, previewUrl: string, timing?: MeterCaptureTiming) {
     if (!selectedMeter || !meterNumber) return toast.error("اختر المشترك والعداد المرتبط أولاً");
-    const captureToken = ++captureSequenceRef.current; const deadline = createMeterReadingDeadline();
+    const captureToken = ++captureSequenceRef.current;
+    const deadline = createMeterReadingDeadline(timing?.startedAt);
+    const performanceTrace = createMeterReadingPerformance(timing?.startedAt);
+    if (timing) markCaptureCompleted(performanceTrace, timing.completedAt); else markCaptureCompleted(performanceTrace);
     setPhotoBlob(file); setPhotoPreview(previewUrl); setOcrSerial(undefined); setOcrReading(null); setCurrent(""); setOcrBusy(true);
     const isCurrentCapture = () => captureSequenceRef.current === captureToken;
     const processCapture = async () => {
-      if (!isCurrentCapture()) throw new MeterReadingTimeoutError(); deadline.assertWithinDeadline();
+      if (!isCurrentCapture()) throw new MeterReadingTimeoutError(); deadline.assertWithinDeadline(); markProcessingStarted(performanceTrace);
       if (typeof navigator !== "undefined" && !navigator.onLine) {
         const { recognizeMeterImage } = await withMeterReadingDeadline(import("@/lib/meter-ocr"), deadline);
         const res = await withMeterReadingDeadline(recognizeMeterImage(file, { knownMeterNumber: meterNumber, previousReading }), deadline); deadline.assertWithinDeadline(); if (!isCurrentCapture()) return;
         if (!res.meterNumberMatch || normalizeSerial(res.meterNumberMatch) !== normalizeSerial(meterNumber)) { clearPhoto(); toast.error(`عذراً، هذه الصورة ليست للعداد المرتبط (${meterNumber}). أعد تصوير العداد الصحيح.`); return; }
         if (res.readingValue == null || res.readingAmbiguous) { toast.error("عذراً، تعذر استخراج قراءة واضحة. أعد التصوير مع تقريب شاشة العداد."); return; }
-        deadline.assertWithinDeadline(); if (!isCurrentCapture()) return; setOcrSerial(res.meterNumberMatch); setOcrReading(res.readingValue); setCurrent(String(res.readingValue)); console.info("[meter-reading] completed", { mode: "offline", elapsedMs: Math.round(deadline.elapsedMs()) }); toast.success(`تم التحقق من العداد واستخراج القراءة: ${res.readingValue}`); return;
+        deadline.assertWithinDeadline(); if (!isCurrentCapture()) return;
+        markFieldAssigned(performanceTrace); setOcrSerial(res.meterNumberMatch); setOcrReading(res.readingValue); setCurrent(String(res.readingValue)); console.info("[meter-reading] completed", { mode: "offline", elapsedMs: Math.round(performanceTrace.totalMs ?? deadline.elapsedMs()) }); toast.success(`تم التحقق من العداد واستخراج القراءة: ${res.readingValue}`); return;
       }
       const [{ fileToDataUrl }, { readMeterFromImage }] = await withMeterReadingDeadline(Promise.all([import("@/lib/meter-ocr"), import("@/lib/meter-vision.functions")]), deadline);
       const imageDataUrl = await withMeterReadingDeadline(fileToDataUrl(file), deadline);
       const ai = await withMeterReadingDeadline(readMeterFromImage({ data: { imageDataUrl, knownMeterNumber: meterNumber, previousReading } }), deadline); deadline.assertWithinDeadline(); if (!isCurrentCapture()) return;
       if (ai.serialMatch !== "match" || !ai.meterNumber || normalizeSerial(ai.meterNumber) !== normalizeSerial(meterNumber)) { clearPhoto(); toast.error(`عذراً، هذه الصورة ليست للعداد المرتبط (${meterNumber}). أعد تصوير العداد الصحيح.`); return; }
       if (ai.readingValue == null || ai.ambiguous) { toast.error("عذراً، تعذر استخراج قراءة واضحة. أعد التصوير مع تقريب شاشة العداد."); return; }
-      deadline.assertWithinDeadline(); if (!isCurrentCapture()) return; setOcrSerial(ai.meterNumber); setOcrReading(ai.readingValue); setCurrent(String(ai.readingValue)); console.info("[meter-reading] completed", { mode: "online", elapsedMs: Math.round(deadline.elapsedMs()) }); toast.success(`تم التحقق من العداد واستخراج القراءة: ${ai.readingValue}`);
+      deadline.assertWithinDeadline(); if (!isCurrentCapture()) return;
+      markFieldAssigned(performanceTrace); setOcrSerial(ai.meterNumber); setOcrReading(ai.readingValue); setCurrent(String(ai.readingValue)); console.info("[meter-reading] completed", { mode: "online", elapsedMs: Math.round(performanceTrace.totalMs ?? deadline.elapsedMs()) }); toast.success(`تم التحقق من العداد واستخراج القراءة: ${ai.readingValue}`);
     };
-    try { await withMeterReadingDeadline(processCapture(), deadline); } catch (e) { if (!isCurrentCapture()) return; if (e instanceof MeterReadingTimeoutError) { clearPhoto(); toast.error("تعذر استخراج قراءة العداد خلال 5 ثوانٍ. أعد تصوير العداد بصورة أوضح."); console.warn("[meter-reading] deadline exceeded", { elapsedMs: Math.round(deadline.elapsedMs()) }); } else { console.error("Meter image verification failed", e); clearPhoto(); toast.error((e as Error).message || "تعذر تحليل صورة العداد. أعد التصوير."); } } finally { if (isCurrentCapture()) setOcrBusy(false); }
+    try { await withMeterReadingDeadline(processCapture(), deadline); }
+    catch (e) { if (!isCurrentCapture()) return; if (e instanceof MeterReadingTimeoutError) { clearPhoto(); toast.error("تعذر استخراج قراءة العداد خلال 5 ثوانٍ. أعد تصوير العداد بصورة أوضح."); console.warn("[meter-reading] deadline exceeded", { elapsedMs: Math.round(performanceTrace.totalMs ?? deadline.elapsedMs()) }); } else { console.error("Meter image verification failed", e); clearPhoto(); toast.error((e as Error).message || "تعذر تحليل صورة العداد. أعد التصوير."); } }
+    finally { if (isCurrentCapture()) setOcrBusy(false); }
   }
+
   async function captureGeo() { setGeoBusy(true); try { const fix = await getGeoFix(); setGeo(fix); toast.success(`تم تحديد الموقع بدقة ${fix.accuracy.toFixed(0)} م`); } catch (e) { toast.error(`فشل تحديد الموقع: ${(e as Error).message}`); } finally { setGeoBusy(false); } }
   function resetAfterSave() { captureSequenceRef.current += 1; setCurrent(""); setPhotoBlob(null); setPhotoPreview(undefined); setOcrSerial(undefined); setOcrReading(null); setGeo(null); setCameraOpen(false); setReadingDate(localDateStamp()); }
   async function saveReading() {
