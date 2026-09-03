@@ -110,16 +110,20 @@ export const useTariff = create<TariffState>()((set, get) => ({
     const tenantId = tenantIdRaw as unknown as string | null;
     if (!tenantId) return { ok: false, error: "لا يمكن تحديد المؤسسة الحالية" };
 
+    // لا يجوز حفظ تعرفة فعّالة بلا أي شريحة، وإلا سيُحتسب الاستهلاك بالرسوم الثابتة فقط.
+    if (tiers.length === 0) return { ok: false, error: "يجب أن تحتوي التعرفة على شريحة واحدة على الأقل" };
+    if (!Number.isFinite(fixedFee) || fixedFee < 0) return { ok: false, error: "الرسوم الثابتة يجب أن تكون رقماً غير سالب" };
+
     // تحقق منطقي: الحدود تصاعدية والأسعار موجبة
     const sorted = [...tiers].sort((a, b) => a.tier_order - b.tier_order);
     let last = 0;
     for (let i = 0; i < sorted.length; i++) {
       const t = sorted[i];
-      if (t.rate_per_m3 < 0) return { ok: false, error: "السعر لا يمكن أن يكون سالباً" };
+      if (!Number.isFinite(t.rate_per_m3) || t.rate_per_m3 < 0) return { ok: false, error: "السعر يجب أن يكون رقماً غير سالب" };
       if (t.upper_bound == null) {
         if (i !== sorted.length - 1) return { ok: false, error: "الشريحة المفتوحة يجب أن تكون الأخيرة" };
       } else {
-        if (t.upper_bound <= last) return { ok: false, error: "حدود الشرائح يجب أن تكون تصاعدية" };
+        if (!Number.isFinite(t.upper_bound) || t.upper_bound <= last) return { ok: false, error: "حدود الشرائح يجب أن تكون أرقاماً موجبة وتصاعدية" };
         last = t.upper_bound;
       }
     }
