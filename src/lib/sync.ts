@@ -3,7 +3,7 @@ import { useStore } from "./store";
 import { supabase } from "./supabase";
 import { toast } from "sonner";
 import type { Database } from "@/integrations/supabase/types";
-import { STORE_BLOBS, STORE_QUEUE, idbDelete, idbGet, idbGetAll, idbPut, requestPersistentStorage } from "./offline-db";
+import { STORE_BLOBS, STORE_QUEUE, idbDelete, idbGet, idbGetAll, idbPut, idbPutQueueWithPhoto, requestPersistentStorage } from "./offline-db";
 
 type ReadingInsert = Database["public"]["Tables"]["water_readings"]["Insert"];
 const PHOTO_BUCKET = "meter-readings";
@@ -65,13 +65,7 @@ export async function addPending(p: Omit<PendingReading,"clientId"|"createdAt"|"
   const clientId = p.clientId ?? crypto.randomUUID();
   validatePhoto(photo);
   const item: PendingReading = { ...p, clientId, createdAt: new Date().toISOString(), status: "pending", attempts: 0, hasPhoto: true, photoType: photo.type };
-  await idbPut(STORE_BLOBS, photo, clientId);
-  try {
-    await idbPut(STORE_QUEUE, item);
-  } catch (error) {
-    await idbDelete(STORE_BLOBS, clientId).catch(() => undefined);
-    throw error;
-  }
+  await idbPutQueueWithPhoto(item, photo);
   notify(); return item;
 }
 export async function removePending(clientId: string) { await idbDelete(STORE_QUEUE, clientId); await idbDelete(STORE_BLOBS, clientId); notify(); }
