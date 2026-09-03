@@ -3,6 +3,7 @@
  * رقم العداد هو هوية: لا يُقبل إلا التطابق التام بعد التطبيع الآمن للتنسيق.
  */
 import { assertMeterImageQuality } from "./meter-image-quality";
+import { createMeterReadingDeadline, MeterReadingTimeoutError, withMeterReadingDeadline } from "./meter-reading-deadline";
 
 export const LOCAL_TESSERACT_OPTIONS = {
   workerPath: "/tesseract/worker.min.js",
@@ -25,11 +26,6 @@ const LOCAL_TESSERACT_ASSETS = [
 
 let prewarmed: Promise<boolean> | null = null;
 
-/**
- * Warm every Tesseract v7 LSTM runtime variant shipped with this repository.
- * The cache name intentionally matches the PWA Workbox runtime cache so there
- * is one local copy of the OCR runtime rather than two independent caches.
- */
 export function prewarmOcrAssets(): Promise<boolean> {
   if (typeof window === "undefined") return Promise.resolve(false);
   if (!prewarmed) {
@@ -58,12 +54,6 @@ const ARABIC_DIGITS = /[٠-٩۰-۹]/g;
 export function normalizeDigits(input: string) { return input.replace(ARABIC_DIGITS, (d) => { const code = d.charCodeAt(0); return code >= 0x0660 && code <= 0x0669 ? String(code - 0x0660) : String(code - 0x06f0); }); }
 export function normalizeSerial(v: string) { return normalizeDigits(v).normalize("NFKC").trim().toUpperCase().replace(/[\u2010-\u2015\u2212]/g, "-").replace(/[\s_-]+/g, "-").replace(/^-+|-+$/g, ""); }
 
-/**
- * OCR engines may split a printed serial into multiple words on one line.
- * We therefore test the complete OCR text line-by-line in addition to the
- * individual OCR tokens. The comparison itself remains exact after the same
- * canonicalization; there is no fuzzy/partial matching.
- */
 export function serialFoundInOcrText(rawText: string, knownSerial: string): boolean {
   const known = normalizeSerial(knownSerial);
   if (!known) return false;
@@ -73,7 +63,7 @@ export function serialFoundInOcrText(rawText: string, knownSerial: string): bool
 const DATE_RE = /^(19|20)\d{2}$|^\d{1,2}[./-]\d{1,2}([./-]\d{2,4})?$/;
 const UNIT_RE = /^(m3|m³|cbm|kwh|lt|l|kg|bar|°c|mm|cm)$/i;
 function classify(text: string, known: string, isReading: boolean): OcrToken["kind"] { const n = normalizeSerial(text); if (known && n === known) return "meter-number"; if (UNIT_RE.test(text.trim())) return "unit"; if (DATE_RE.test(normalizeDigits(text.trim()))) return "date"; if (isReading) return "reading"; return "other"; }
-function readingShape(text: string) { const t = normalizeDigits(text).replace(/[^\d.,]/g, "").replace(/,/g, "."); if (!/^\d{1,12}(\.\d{1,3})?$/.test(t)) return { ok: false, value: null as number | null }; const digits = t.replace(/\D/g, ""); if (digits.length < 3 || digits.length > 12) return { ok: false, value: null as number | null }; const value = Number(t); return Number.isFinite(value) ? { ok: true, value } : { ok: false, value: null as number | null }; }
+function readingShape(text: string) { const t = normalizeDigits(text).replace(/[^\d.,]/g, "").replace(/,/g, "."); if (!/^\d{1,12}(\.\d{1,3})?$/.test(t)) return { ok: false, value: null as number | null }; const digits = t.replace(/\D/g, ""); if (digits.length < 3 || digits.length > 12) return { ok: false, value: null }; const value = Number(t); return Number.isFinite(value) ? { ok: true, value } : { ok: false, value: null as number | null }; }
 
 export interface RecognizeOptions { knownMeterNumber?: string; previousReading?: number | null; excludeNumbers?: (string | number | null | undefined)[]; }
 interface FlatWord { text: string; confidence: number; height: number; }
@@ -122,29 +112,39 @@ async function createVisionDataUrl(file: Blob): Promise<string> {
   } finally { URL.revokeObjectURL(src); }
 }
 
-/** Returns an AI-safe derived image when needed; the supplied Blob is never modified or re-encoded for storage. */
 export async function fileToDataUrl(file: Blob): Promise<string> { return createVisionDataUrl(file); }
 
 export async function recognizeMeterImage(image: Blob | File | string, options: RecognizeOptions = {}): Promise<MeterOcrResult> {
   if (typeof window === "undefined") throw new Error("OCR متاح في المتصفح فقط");
-  if (typeof image !== "string") await assertMeterImageQuality(image);
-  const { createWorker } = await import("tesseract.js"); const worker = await createWorker("eng", 1, LOCAL_TESSERACT_OPTIONS);
+  const deadline = createMeterReadingDeadline();
+  if (typeof image !== "string") await withMeterReadingDeadline(assertMeterImageQuality(image), deadline);
+  const { createWorker } = await withMeterReadingDeadline(import("tesseract.js"), deadline);
+  const worker = await withMeterReadingDeadline(createWorker("eng", 1, LOCAL_TESSERACT_OPTIONS), deadline);
   try {
-    const input = await preprocess(image); const general = await worker.recognize(input as never, {}, { text: true, blocks: true } as never); const rawText = general.data.text ?? ""; const generalWords = flattenWords(general.data); let digitWords: FlatWord[] = [];
-    try { await worker.setParameters({ tessedit_char_whitelist: "0123456789.," }); const digits = await worker.recognize(input as never, {}, { text: true, blocks: true } as never); digitWords = flattenWords(digits.data); } catch { digitWords = []; } finally { try { await worker.setParameters({ tessedit_char_whitelist: "" }); } catch { /* worker teardown follows */ } }
-    const known = options.knownMeterNumber ? normalizeSerial(options.knownMeterNumber) : "";
-    const fallback = !generalWords.length && !digitWords.length ? rawText.split(/\s+/).filter(Boolean).map((t) => ({ text: t.trim(), confidence: 0, height: 0 })) : [];
-    const cleaned = [...generalWords, ...digitWords, ...fallback].filter((w) => w.text.length > 0);
-    const excluded = new Set((options.excludeNumbers ?? []).filter((v) => v != null && String(v).trim() !== "").map((v) => normalizeSerial(String(v))));
-    const serialProven = !known || cleaned.some((w) => normalizeSerial(w.text) === known) || serialFoundInOcrText(rawText, known);
-    const candidates = cleaned.map((w) => ({ ...w, shape: readingShape(w.text) })).filter((w) => w.shape.ok && w.shape.value != null && w.shape.value >= 0 && normalizeSerial(w.text) !== known && !excluded.has(normalizeSerial(w.text)) && !UNIT_RE.test(w.text.trim()) && !DATE_RE.test(normalizeDigits(w.text.trim())));
-    const prev = options.previousReading ?? null;
-    const scored = candidates.map((c) => { const digitLen = normalizeDigits(c.text).replace(/\D/g, "").length; let score = c.height * 2 + c.confidence + digitLen * 8; if (prev != null && c.shape.value != null) { if (c.shape.value >= prev) score += 25; if (Math.abs(c.shape.value - prev) <= Math.max(50, prev * 0.5)) score += 25; } return { ...c, score }; }).sort((a, b) => b.score - a.score);
-    const filteredPrev = scored.filter((c) => prev == null || c.shape.value !== prev); const seen = new Set<number>(); const usable = filteredPrev.filter((c) => { const v = c.shape.value as number; if (seen.has(v)) return false; seen.add(v); return true; }); const best = usable[0] ?? null; const second = usable[1] ?? null; const readingAmbiguous = !!best && !!second && second.score >= best.score * 0.97;
-    const tokens: OcrToken[] = cleaned.map((w) => ({ text: w.text, confidence: Math.round(w.confidence), height: Math.round(w.height), kind: classify(w.text, known, best ? w.text === best.text : false) }));
-    const meterNumberMatch = serialProven ? (options.knownMeterNumber ?? null) : null;
-    if (known && !serialProven) throw new Error(`عذراً، تعذر إثبات رقم العداد المرتبط (${options.knownMeterNumber}). أعد تصوير الرقم كاملاً وبوضوح.`);
-    if (readingAmbiguous) return { rawText, tokens, meterNumberMatch, readingCandidate: null, readingValue: null, readingConfidence: 0, readingAmbiguous: true, otherTokens: tokens.filter((t) => t.kind !== "reading") };
-    return { rawText, tokens, meterNumberMatch, readingCandidate: best?.text ?? null, readingValue: best?.shape.value ?? null, readingConfidence: best ? Math.round(best.confidence) : 0, readingAmbiguous: false, otherTokens: tokens.filter((t) => t.kind !== "reading") };
+    const run = async () => {
+      const input = await preprocess(image); deadline.assertWithinDeadline();
+      const general = await worker.recognize(input as never, {}, { text: true, blocks: true } as never);
+      const rawText = general.data.text ?? "";
+      const cleaned = flattenWords(general.data).filter((w) => w.text.length > 0);
+      const known = options.knownMeterNumber ? normalizeSerial(options.knownMeterNumber) : "";
+      const fallback = !cleaned.length ? rawText.split(/\s+/).filter(Boolean).map((t) => ({ text: t.trim(), confidence: 0, height: 0 })) : [];
+      const allWords = [...cleaned, ...fallback];
+      const excluded = new Set((options.excludeNumbers ?? []).filter((v) => v != null && String(v).trim() !== "").map((v) => normalizeSerial(String(v))));
+      const serialProven = !known || allWords.some((w) => normalizeSerial(w.text) === known) || serialFoundInOcrText(rawText, known);
+      const candidates = allWords.map((w) => ({ ...w, shape: readingShape(w.text) })).filter((w) => w.shape.ok && w.shape.value != null && w.shape.value >= 0 && normalizeSerial(w.text) !== known && !excluded.has(normalizeSerial(w.text)) && !UNIT_RE.test(w.text.trim()) && !DATE_RE.test(normalizeDigits(w.text.trim())));
+      const prev = options.previousReading ?? null;
+      const scored = candidates.map((c) => { const digitLen = normalizeDigits(c.text).replace(/\D/g, "").length; let score = c.height * 2 + c.confidence + digitLen * 8; if (prev != null && c.shape.value != null) { if (c.shape.value >= prev) score += 25; if (Math.abs(c.shape.value - prev) <= Math.max(50, prev * 0.5)) score += 25; } return { ...c, score }; }).sort((a, b) => b.score - a.score);
+      const filteredPrev = scored.filter((c) => prev == null || c.shape.value !== prev); const seen = new Set<number>(); const usable = filteredPrev.filter((c) => { const v = c.shape.value as number; if (seen.has(v)) return false; seen.add(v); return true; }); const best = usable[0] ?? null; const second = usable[1] ?? null; const readingAmbiguous = !!best && !!second && second.score >= best.score * 0.97;
+      const tokens: OcrToken[] = allWords.map((w) => ({ text: w.text, confidence: Math.round(w.confidence), height: Math.round(w.height), kind: classify(w.text, known, best ? w.text === best.text : false) }));
+      const meterNumberMatch = serialProven ? (options.knownMeterNumber ?? null) : null;
+      if (known && !serialProven) throw new Error(`عذراً، تعذر إثبات رقم العداد المرتبط (${options.knownMeterNumber}). أعد تصوير الرقم كاملاً وبوضوح.`);
+      if (readingAmbiguous) return { rawText, tokens, meterNumberMatch, readingCandidate: null, readingValue: null, readingConfidence: 0, readingAmbiguous: true, otherTokens: tokens.filter((t) => t.kind !== "reading") };
+      deadline.assertWithinDeadline();
+      return { rawText, tokens, meterNumberMatch, readingCandidate: best?.text ?? null, readingValue: best?.shape.value ?? null, readingConfidence: best ? Math.round(best.confidence) : 0, readingAmbiguous: false, otherTokens: tokens.filter((t) => t.kind !== "reading") };
+    };
+    return await withMeterReadingDeadline(run(), deadline);
+  } catch (error) {
+    if (error instanceof MeterReadingTimeoutError) throw error;
+    throw error;
   } finally { await worker.terminate(); }
 }
