@@ -28,15 +28,13 @@ export default defineConfig({
         devOptions: { enabled: false },
         workbox: {
           globPatterns: ["**/*.{js,css,woff2,png,svg,ico,html}"],
-          // موارد Tesseract الضخمة تُخزَّن عند الطلب (prewarm) لا في precache
+          // موارد Tesseract الضخمة تُخزَّن عند الطلب (prewarm) لا في precache.
           globIgnores: ["**/tesseract/**"],
 
           // مهم: لا نستخدم navigateFallback هنا. في generateSW يُسجَّل NavigationRoute
           // الخاص به قبل runtimeCaching، فيبتلع كل تنقّل أوفلاين ويعرض offline.html
           // حتى لو كانت نسخة الصفحة محفوظة. بدلاً من ذلك نتعامل مع التنقّل عبر
           // NetworkFirst أدناه، وoffline.html يبقى fallback أخيراً فقط.
-          // "" يمنع vite-plugin-pwa من حقن navigateFallback الافتراضي (index.html)
-          // وهو غير موجود أصلاً في تطبيق SSR.
           navigateFallback: "",
           additionalManifestEntries: [{ url: "/offline.html", revision: null }],
           cleanupOutdatedCaches: true,
@@ -64,6 +62,17 @@ export default defineConfig({
                       Response.error(),
                   },
                 ],
+              },
+            },
+            {
+              // Keep the field OCR runtime local. The browser can satisfy these
+              // requests from the service worker cache after one successful online load.
+              urlPattern: ({ url, sameOrigin }) => sameOrigin && url.pathname.startsWith("/tesseract/"),
+              handler: "CacheFirst",
+              options: {
+                cacheName: "mizan-tesseract",
+                expiration: { maxEntries: 20, maxAgeSeconds: 60 * 60 * 24 * 365 },
+                cacheableResponse: { statuses: [200] },
               },
             },
             {
