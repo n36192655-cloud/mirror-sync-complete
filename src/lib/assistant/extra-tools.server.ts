@@ -6,6 +6,10 @@ const isUuid = (v: unknown): v is string => typeof v === "string" && /^[0-9a-f]{
 const n = (v: unknown) => (typeof v === "number" ? v : Number(v ?? 0) || 0);
 const d = (v: unknown) => (typeof v === "string" ? v.slice(0, 10) : "");
 const fail = (error: string): ExtraToolResult => ({ ok: false, data: { error } });
+const failDatabase = (error: unknown): ExtraToolResult => {
+ console.error("[assistant-tool] database error", error);
+ return fail("تعذر إكمال الطلب من مصدر البيانات. حاول مرة أخرى.");
+};
 const periodProps = { customer_id: { type: "string", description: "UUID حقيقي من search_customers" }, from: { type: "string", description: "بداية الفترة YYYY-MM-DD" }, to: { type: "string", description: "نهاية الفترة YYYY-MM-DD" } };
 export const EXTRA_ASSISTANT_TOOLS = [
  { type: "function", function: { name: "get_customer_period_summary", description: "كشف حساب تحليلي دقيق لمشترك خلال فترة محددة: الاستهلاك المعتمد فقط، إجمالي الفواتير، أعلى وأقل فاتورة، المدفوعات المعتمدة، الفواتير غير المسددة، والرصيد الحالي. نسبة التحصيل هنا هي المدفوعات المعتمدة داخل الفترة مقسومة على مفوتر الفترة نفسها، وليست معدل تحصيل الذمم الافتتاحية.", parameters: { type: "object", properties: periodProps, required: ["customer_id", "from", "to"], additionalProperties: false } } },
@@ -33,7 +37,7 @@ async function listUnpaidBills(supabase: DB, args: Record<string, unknown>): Pro
  if (from) query = query.gte("issued_at", from);
  if (to) query = query.lte("issued_at", `${to}T23:59:59`);
  const { data, error } = await query;
- if (error) return fail(error.message);
+ if (error) return failDatabase(error);
  const unpaid = (data ?? []).filter((b) => n(b.total) - n(b.paid_amount) > 0.01).slice(0, limit);
  return { ok: true, data: { count: unpaid.length, bills: unpaid.map((b) => ({ bill_number: b.bill_number ?? "", customer_id: b.customer_id, date: d(b.issued_at), due_date: d(b.due_date), amount: n(b.total), paid: n(b.paid_amount), remaining: Math.max(n(b.total) - n(b.paid_amount), 0), status: b.status })) }, table: { title: "الفواتير غير المسددة بالكامل", columns: ["رقم الفاتورة", "التاريخ", "المبلغ", "المدفوع", "المتبقي", "الحالة"], rows: unpaid.map((b) => [b.bill_number ?? "", d(b.issued_at), n(b.total), n(b.paid_amount), Math.max(n(b.total) - n(b.paid_amount), 0), b.status]) } };
 }
@@ -50,7 +54,7 @@ async function getCustomerPeriodSummary(supabase: DB, args: Record<string, unkno
   supabase.from("water_readings").select("reading_date,current_reading,previous,consumption,status").eq("customer_id", customerId).gte("reading_date", from).lte("reading_date", `${to}T23:59:59`).eq("status", "approved").order("reading_date", { ascending: true }),
   supabase.from("customer_balances").select("current_balance").eq("customer_id", customerId).maybeSingle(),
  ]);
- if (customerError) return fail(customerError.message); if (billsError) return fail(billsError.message); if (paymentsError) return fail(paymentsError.message); if (readingsError) return fail(readingsError.message); if (balanceError) return fail(balanceError.message); if (!customer) return { ok: true, data: { found: false, note: "المشترك غير موجود ضمن صلاحياتك." } };
+ if (customerError) return failDatabase(customerError); if (billsError) return failDatabase(billsError); if (paymentsError) return failDatabase(paymentsError); if (readingsError) return failDatabase(readingsError); if (balanceError) return failDatabase(balanceError); if (!customer) return { ok: true, data: { found: false, note: "المشترك غير موجود ضمن صلاحياتك." } };
  const billList = bills ?? []; const paymentList = payments ?? []; const readingList = readings ?? [];
  const billed = billList.reduce((s,b)=>s+n(b.total),0); const paid = paymentList.reduce((s,p)=>s+n(p.amount),0); const consumption = readingList.reduce((s,r)=>s+Math.max(n(r.consumption),0),0); const unpaid = billList.filter(b=>n(b.total)-n(b.paid_amount)>0.01); const unpaidAmount = unpaid.reduce((s,b)=>s+Math.max(n(b.total)-n(b.paid_amount),0),0); const highest=[...billList].sort((a,b)=>n(b.total)-n(a.total))[0]??null; const lowest=[...billList].sort((a,b)=>n(a.total)-n(b.total))[0]??null; const collectionPct=billed>0?Math.round((paid/billed)*1000)/10:null;
  const collectionNote = collectionPct !== null && collectionPct > 100 ? "قد تتجاوز النسبة 100% لأن المدفوعات خلال الفترة قد تشمل فواتير من فترات سابقة؛ لذلك تُسمى هنا نسبة التحصيل مقابل مفوتر الفترة وليست معدل تحصيل الذمم." : "المدفوعات المعتمدة خلال الفترة ÷ مفوتر الفترة نفسها.";
@@ -65,7 +69,7 @@ async function getProjectEfficiency(supabase: DB, args: Record<string, unknown>)
   supabase.from("water_bills").select("total,paid_amount,issued_at").gte("issued_at",from).lte("issued_at",`${to}T23:59:59`),
   supabase.from("payments").select("amount,status,paid_at").gte("paid_at",from).lte("paid_at",`${to}T23:59:59`),
  ]);
- if(productionError)return fail(productionError.message); if(readingsError)return fail(readingsError.message); if(billsError)return fail(billsError.message); if(paymentsError)return fail(paymentsError.message);
+ if(productionError)return failDatabase(productionError); if(readingsError)return failDatabase(readingsError); if(billsError)return failDatabase(billsError); if(paymentsError)return failDatabase(paymentsError);
  const produced=(production??[]).reduce((s,p)=>s+Math.max(n(p.produced_m3),0),0); const consumed=(readings??[]).filter(r=>r.status==="approved").reduce((s,r)=>s+Math.max(n(r.consumption),0),0); const billed=(bills??[]).reduce((s,b)=>s+n(b.total),0); const collected=(payments??[]).filter(p=>p.status==="approved").reduce((s,p)=>s+n(p.amount),0); const balanceGap=produced-consumed; const gapM3=Math.max(balanceGap,0); const gapPct=produced>0?Math.round((gapM3/produced)*1000)/10:null; const collectionPct=billed>0?Math.round((collected/billed)*1000)/10:null; const dataQuality=balanceGap<0?"تنبيه: الاستهلاك المعتمد أكبر من الإنتاج المسجل؛ راجع اكتمال بيانات الإنتاج والقراءات قبل تفسير الفجوة.":produced===0?"لا يوجد إنتاج مسجل في الفترة المحددة، لذلك لا يمكن حساب نسبة الفجوة.":"الفجوة الموجبة بين الإنتاج المسجل والاستهلاك المعتمد ليست وحدها دليلاً على تسرب أو فاقد ظاهري أو NRW.";
  return {ok:true,data:{period:{from,to},production_m3:produced,approved_consumption_m3:consumed,production_consumption_gap_m3:gapM3,production_consumption_balance_gap_m3:balanceGap,production_consumption_gap_pct:gapPct,billed_amount:billed,collected_amount:collected,collection_pct:collectionPct,collection_pct_definition:"المحصّل المعتمد خلال الفترة ÷ المفوتر خلال الفترة نفسها؛ قد تتجاوز 100% إذا شملت التحصيلات فواتير من فترات سابقة.",data_quality_note:dataQuality},table:{title:`كفاءة المشروع — ${from} إلى ${to}`,columns:["المؤشر","القيمة"],rows:[["الإنتاج م³",produced],["الاستهلاك المعتمد م³",consumed],["فجوة الإنتاج والاستهلاك م³",gapM3],["فجوة الإنتاج والاستهلاك %",gapPct],["المفوتر",billed],["المحصّل",collected],["نسبة التحصيل مقابل مفوتر الفترة %",collectionPct]]}};
 }
