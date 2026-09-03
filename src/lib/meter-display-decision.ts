@@ -1,5 +1,5 @@
 import type { MeterDisplayType } from "./meter-display";
-import { normalizeMeterDigits, parseMeterReading } from "./meter-display";
+import { isDisplayTypeRequiringStrongEvidence, parseMeterReading } from "./meter-display";
 
 export interface DisplayReadingEvidence {
   displayType: MeterDisplayType;
@@ -15,14 +15,12 @@ export function validateDisplayReading(
   candidate: unknown,
   confidence: number,
 ): DisplayReadingEvidence {
-  const normalized = normalizeMeterDigits(String(candidate ?? "")).trim();
-  const parsed = parseMeterReading(normalized);
+  const parsed = parseMeterReading(candidate);
   if (!parsed.valid || parsed.value === null) {
-    return { displayType, candidate: normalized, confidence, ambiguous: true, reason: "invalid" };
+    return { displayType, candidate: parsed.normalized, confidence, ambiguous: true, reason: "invalid" };
   }
 
-  const strong = displayType === "analog_dial" || displayType === "multi_register" || displayType === "smart_display";
-  if (strong && confidence < 92) {
+  if (isDisplayTypeRequiringStrongEvidence(displayType) && confidence < 92) {
     return { displayType, candidate: parsed.normalized, confidence, ambiguous: true, reason: "strong_evidence_required" };
   }
 
