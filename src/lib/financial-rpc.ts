@@ -11,7 +11,7 @@ export async function recordPayment(input: {
     _bill_id: input.billId,
     _amount: input.amount,
     _method: input.method,
-    _client_uuid: input.clientUuid ?? null,
+    _client_uuid: input.clientUuid ?? undefined,
   });
   if (error) throw new Error(error.message);
   if (!data) throw new Error("تعذّر تسجيل الدفعة في قاعدة البيانات");
@@ -28,7 +28,7 @@ export async function approvePayment(paymentId: string): Promise<void> {
 export async function rejectPayment(paymentId: string, reason?: string): Promise<void> {
   const { error } = await supabase.rpc("reject_payment", {
     _payment_id: paymentId,
-    _reason: reason ?? null,
+    _reason: reason ?? undefined,
   });
   if (error) throw new Error(error.message);
 }

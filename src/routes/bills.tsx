@@ -219,7 +219,8 @@ function KuraimiDialog({ id, onClose, onPaid }: { id: number; onClose: () => voi
   const b = bills.find((x) => x.id === id);
   const [saving, setSaving] = useState(false);
   if (!b) return null;
-  const c = customers.find((x) => x.id === b.customer_id);
+  const bill = b;
+  const c = customers.find((x) => x.id === bill.customer_id);
   const remaining = billBalance(b, payments);
 
   async function submit() {
@@ -230,14 +231,14 @@ function KuraimiDialog({ id, onClose, onPaid }: { id: number; onClose: () => voi
     setSaving(true);
     try {
       await recordPayment({
-        billId: mappedUuid("bill", b.id),
+        billId: mappedUuid("bill", bill.id),
         amount: remaining,
         method: "wallet",
         clientUuid: crypto.randomUUID(),
       });
       await hydrateFromSupabase();
       toast.success("تم تسجيل طلب تحويل الكريمي في قاعدة البيانات — يجب التحقق من التحويل واعتماده من الإدارة");
-      onPaid(b.id);
+      onPaid(bill.id);
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "تعذّر تسجيل التحويل");
     } finally {

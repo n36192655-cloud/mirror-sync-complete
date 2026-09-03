@@ -35,7 +35,7 @@ interface Form {
 const EMPTY: Form = { name: "", phone: "", directorate: TAIZ_DIRECTORATES[0], address: "", meterType: "water", meterNumber: "", familyMembers: 5 };
 
 function CustomersPage() {
-  const { customers, meters, adminCreateSubscriber, deactivateCustomer, hydrateFromSupabase } = useStore();
+  const { customers, meters, adminCreateSubscriber, unassignMeter, hydrateFromSupabase } = useStore();
   const [q, setQ] = useState("");
   const [open, setOpen] = useState(false);
   const [form, setForm] = useState<Form>(EMPTY);
@@ -92,7 +92,7 @@ function CustomersPage() {
   async function deactivate(id: number) {
     if (!confirm("إيقاف المشترك وفك ارتباط عدّاده؟ القراءات والفواتير تبقى محفوظة.")) return;
     try {
-      await deactivateCustomer(id, "manual");
+      await unassignMeter(id, "manual");
       toast.success("تم إيقاف المشترك");
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "تعذّر إيقاف المشترك");

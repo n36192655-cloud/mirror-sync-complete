@@ -73,7 +73,7 @@ export const askAssistant = createServerFn({ method: "POST" }).middleware([requi
       try { args = JSON.parse(call.function.arguments || "{}") as Record<string, unknown>; } catch { args = {}; }
       usedTools.push(call.function.name);
       let result;
-      try { result = extraToolNames.has(call.function.name) ? await runExtraAssistantTool(context.supabase, call.function.name, args) : await runAssistantTool(context.supabase, call.function.name, args); }
+      try { result = extraToolNames.has(call.function.name) ? await runExtraAssistantTool(context.supabase, call.function.name as Parameters<typeof runExtraAssistantTool>[1], args) : await runAssistantTool(context.supabase, call.function.name, args); }
       catch (err) { console.error("[assistant] tool failed", call.function.name, err); result = { ok: false, data: { error: "تعذر تنفيذ الاستعلام." } }; }
       if (result.table && result.table.rows.length > 0) tables.push(result.table);
       if (call.function.name === "search_customers") {

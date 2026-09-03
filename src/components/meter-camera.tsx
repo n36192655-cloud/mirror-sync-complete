@@ -82,7 +82,7 @@ const CONSTRAINT_CHAIN: MediaStreamConstraints[] = [
       width: { ideal: 2560 },
       height: { ideal: 1440 },
       frameRate: { ideal: 30, max: 30 },
-      resizeMode: "none",
+      ...({ resizeMode: "none" } as MediaTrackConstraints),
     },
     audio: false,
   },
@@ -128,7 +128,7 @@ async function optimizeTrackForMeterCapture(track: MediaStreamTrack): Promise<vo
       zoom?: { min: number; max: number; step?: number };
     };
 
-    const advanced: MediaTrackConstraintSet[] = [];
+    const advanced: Array<MediaTrackConstraintSet & { focusMode?: string; zoom?: number }> = [];
 
     if (capabilities.focusMode?.includes("continuous")) {
       advanced.push({ focusMode: "continuous" });
@@ -143,7 +143,7 @@ async function optimizeTrackForMeterCapture(track: MediaStreamTrack): Promise<vo
 
     // Do not force torch on: reflections from meter glass can be worse than darkness.
     // We only request continuous focus/zoom automatically; lighting remains adaptive.
-    if (advanced.length) await track.applyConstraints({ advanced });
+    if (advanced.length) await track.applyConstraints({ advanced } as MediaTrackConstraints);
   } catch (error) {
     // Camera capability support varies considerably across mobile browsers.
     // Failure here must never prevent capture.

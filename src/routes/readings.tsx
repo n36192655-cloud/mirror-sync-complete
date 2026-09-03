@@ -225,7 +225,7 @@ function ReadingsPage() {
     if (reason === null) return;
     setApprovalBusy(id);
     try {
-      const { error } = await supabase.rpc("reject_reading", { _reading_id: id, _reason: reason.trim() || null });
+      const { error } = await supabase.rpc("reject_reading", { _reading_id: id, _reason: reason.trim() || undefined });
       if (error) throw new Error(error.message);
       await refresh();
       toast.success("تم رفض القراءة وتسجيل سبب الرفض");
@@ -260,7 +260,7 @@ function ReadingsPage() {
           const busy = approvalBusy === r.id;
           return <div key={r.id} className="rounded-md border p-3 flex flex-col md:flex-row md:items-center md:justify-between gap-3">
             <div className="text-sm space-y-1">
-              <div><span className="text-muted-foreground">العداد:</span> <span className="font-mono" dir="ltr">{r.meter_number}</span></div>
+              <div><span className="text-muted-foreground">العداد:</span> <span className="font-mono" dir="ltr">{meterLinks.find(m => m.id === r.meter_id)?.number ?? "—"}</span></div>
               <div><span className="text-muted-foreground">التاريخ:</span> {r.reading_date} · <span className="text-muted-foreground">القراءة:</span> <span className="font-mono">{r.current_reading}</span></div>
               <div><span className="text-muted-foreground">السبب:</span> <Badge variant="outline">{r.flag ?? "مراجعة"}</Badge></div>
             </div>
