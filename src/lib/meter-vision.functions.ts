@@ -1,7 +1,8 @@
 import { createServerFn } from "@tanstack/react-start";
 import { requireSupabaseAuth } from "@/integrations/supabase/auth-middleware";
-import { normalizeMeterDisplayType, type MeterDisplayType } from "./meter-display";
+import { normalizeMeterDisplayType, parseMeterReading, type MeterDisplayType } from "./meter-display";
 import { normalizeMeterTechnologyType, requiresStrongVisionEvidence, type MeterTechnologyType } from "./meter-technology";
+import { validateDisplayReading } from "./meter-display-decision";
 
 export interface MeterVisionResult {
   readingValue: number | null;
@@ -82,11 +83,9 @@ export const readMeterFromImage = createServerFn({ method: "POST" })
     let parsed: Record<string, unknown> = {};
     try { parsed = JSON.parse(content) as Record<string, unknown>; } catch { const match = content.match(/\{[\s\S]*\}/); if (match) { try { parsed = JSON.parse(match[0]) as Record<string, unknown>; } catch { parsed = {}; } } }
     const readingDigits = typeof parsed.readingDigits === "string" ? parsed.readingDigits.trim() : "";
-    const normalizedReading = normalizeDigits(readingDigits);
-    const compactReading = normalizedReading.replace(/\s/g, "");
-    const numericReading = compactReading.replace(/,/g, ".");
-    const validReadingShape = /^(?:\d{1,12}|\d{1,12}\.\d{1,3})$/.test(numericReading);
-    const readingValue = validReadingShape && Number.isFinite(Number(numericReading)) ? Number(numericReading) : null;
+    const normalizedReading = normalizeDigits(readingDigits).replace(/[٫﹒．]/g, ".");
+    const parsedReading = parseMeterReading(normalizedReading);
+    const readingValue = parsedReading.valid ? parsedReading.value : null;
     const rawConfidence = parsed.confidence;
     const confidence = typeof rawConfidence === "number" && Number.isFinite(rawConfidence) ? Math.max(0, Math.min(100, Math.round(rawConfidence <= 1 ? rawConfidence * 100 : rawConfidence))) : 0;
     const meterNumber = typeof parsed.meterNumber === "string" && parsed.meterNumber.trim() ? parsed.meterNumber.trim() : null;
@@ -95,8 +94,14 @@ export const readMeterFromImage = createServerFn({ method: "POST" })
     const displayType = normalizeMeterDisplayType(parsed.displayType);
     const technologyType = normalizeMeterTechnologyType(parsed.technologyType);
     const belowPrevious = data.previousReading != null && readingValue != null && readingValue < data.previousReading;
+    const displayDecision = validateDisplayReading(displayType, parsedReading.normalized, confidence);
     const strongEvidenceRequired = requiresStrongVisionEvidence(technologyType, displayType);
     const confidenceThreshold = strongEvidenceRequired ? 92 : 85;
-    const ambiguous = parsed.ambiguous === true || readingValue == null || belowPrevious || confidence < confidenceThreshold || serialMatch !== "match";
+    const ambiguous = parsed.ambiguous === true
+      || displayDecision.ambiguous
+      || readingValue == null
+      || belowPrevious
+      || confidence < confidenceThreshold
+      || serialMatch !== "match";
     return { readingValue: ambiguous ? null : readingValue, confidence, meterNumber, otherNumbers, ambiguous, serialMatch, displayType, technologyType };
   });
