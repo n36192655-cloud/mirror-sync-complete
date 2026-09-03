@@ -1,17 +1,17 @@
 /**
  * اتصال Gemini المشترك (الشات + OCR).
- * لا يثبّت النظام على اسم نموذج محدد: يجرّب قائمة نماذج مجانية متاحة بالترتيب،
- * وينتقل تلقائياً إلى البديل عند تعذّر النموذج أو بلوغ حد الاستخدام.
+ * قائمة النماذج مرتبة حسب الاستقرار والسرعة، مع fallback عند فشل نموذج.
  */
 const GEMINI_ENDPOINT =
   "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions";
 
-/** نماذج مجانية متاحة — الترتيب = أولوية المحاولة. */
+/** Stable Gemini 3 models; avoid retired 2.x IDs in production. */
 const GEMINI_MODELS = [
-  "gemini-flash-latest",
-  "gemini-2.5-flash",
-  "gemini-2.5-flash-lite",
-  "gemini-2.0-flash",
+  "gemini-3.8-flash",
+  "gemini-3.7-flash",
+  "gemini-3.6-flash",
+  "gemini-3.5-flash-lite",
+  "gemini-3.1-flash-lite",
 ];
 
 export class GeminiError extends Error {
@@ -24,7 +24,7 @@ export class GeminiError extends Error {
 
 /**
  * ينفّذ طلب chat/completions مع تبديل تلقائي للنموذج عند الفشل القابل للتعافي.
- * body يُمرَّر كما هو (بدون حقل model).
+ * body يُمرَّر كما هو (مع إضافة model فقط).
  */
 export async function geminiChat(
   apiKey: string,
@@ -48,13 +48,9 @@ export async function geminiChat(
     last = new GeminiError(res.status, text.slice(0, 300));
     console.error("[gemini] model failed", model, res.status, text.slice(0, 300));
 
-    // 429 حد استخدام، 404/400 نموذج غير متاح، 5xx عطل مؤقت → جرّب التالي
-    const retryable =
-      res.status === 429 ||
-      res.status === 404 ||
-      res.status === 400 ||
-      res.status === 403 ||
-      res.status >= 500;
+    // 429/404/5xx are recoverable at the model-selection layer.
+    // Do not retry authentication/permission failures: another model will not fix a bad key.
+    const retryable = res.status === 429 || res.status === 404 || res.status >= 500;
     if (!retryable) break;
   }
 
