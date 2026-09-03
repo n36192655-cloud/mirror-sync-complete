@@ -55,8 +55,8 @@ ALTER TABLE public.water_bills
   );
 
 -- Canonical payment submission. The bill row lock serializes payment
--- reservations; the closed-period check prevents new financial entries from
--- being created against a closed period.
+-- reservations. A payment is posted in the current collection period; an old
+-- invoice must not force a valid current-period payment into a closed period.
 CREATE OR REPLACE FUNCTION public.record_payment(
   _bill_id UUID,
   _amount NUMERIC,
@@ -96,8 +96,8 @@ BEGIN
   IF _bill.status IN ('paid','void') THEN
     RAISE EXCEPTION 'bill is not payable';
   END IF;
-  IF public.is_period_closed(_bill.tenant_id, COALESCE(_bill.issued_at::date, CURRENT_DATE)) THEN
-    RAISE EXCEPTION 'cannot create a financial payment against a closed accounting period';
+  IF public.is_period_closed(_bill.tenant_id, CURRENT_DATE) THEN
+    RAISE EXCEPTION 'cannot create a financial payment in a closed accounting period';
   END IF;
   IF NOT (
     public.has_tenant_role(_bill.tenant_id,'collector')
