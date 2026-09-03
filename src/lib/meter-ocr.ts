@@ -62,7 +62,18 @@ export function serialFoundInOcrText(rawText: string, knownSerial: string): bool
 
 const DATE_RE = /^(19|20)\d{2}$|^\d{1,2}[./-]\d{1,2}([./-]\d{2,4})?$/;
 const UNIT_RE = /^(m3|m³|cbm|kwh|lt|l|kg|bar|°c|mm|cm)$/i;
-function classify(text: string, known: string, isReading: boolean): OcrToken["kind"] { const n = normalizeSerial(text); if (known && n === known) return "meter-number"; if (UNIT_RE.test(text.trim())) return "unit"; if (DATE_RE.test(normalizeDigits(text.trim()))) return "date"; if (isReading) return "reading"; return "other"; }
+// Meter markings such as DN50, Q3 2.5, R160, class/size/year and model labels are
+// identification/specification data, never consumption. They must not become OCR readings.
+const TECHNICAL_NUMBER_RE = /^(?:DN|Q[1234]?|R|PN|MID|ISO|EN|CL(?:ASS)?|CLASS|SIZE|G?\s?\d{1,4}\s?(?:MM|CM)?|20\d{2}|19\d{2})[\s:_-]*[A-Z0-9./-]*$/i;
+export function isTechnicalNumberToken(text: string): boolean {
+  const normalized = normalizeDigits(text).trim().replace(/\s+/g, " ");
+  if (!normalized) return false;
+  if (/^(?:DN|Q[1234]?|R|PN|MID|ISO|EN|CLASS|CL)\s*[-:_]?\s*[0-9A-Z./-]+$/i.test(normalized)) return true;
+  if (/^(?:19|20)\d{2}$/.test(normalized)) return true;
+  if (/^\d{1,4}\s*(?:MM|CM)$/i.test(normalized)) return true;
+  return TECHNICAL_NUMBER_RE.test(normalized);
+}
+function classify(text: string, known: string, isReading: boolean): OcrToken["kind"] { const n = normalizeSerial(text); if (known && n === known) return "meter-number"; if (isTechnicalNumberToken(text)) return "other"; if (UNIT_RE.test(text.trim())) return "unit"; if (DATE_RE.test(normalizeDigits(text.trim()))) return "date"; if (isReading) return "reading"; return "other"; }
 function readingShape(text: string) { const t = normalizeDigits(text).replace(/[^\d.,]/g, "").replace(/,/g, "."); if (!/^\d{1,12}(\.\d{1,3})?$/.test(t)) return { ok: false, value: null as number | null }; const digits = t.replace(/\D/g, ""); if (digits.length < 3 || digits.length > 12) return { ok: false, value: null }; const value = Number(t); return Number.isFinite(value) ? { ok: true, value } : { ok: false, value: null as number | null }; }
 
 export interface RecognizeOptions { knownMeterNumber?: string; previousReading?: number | null; excludeNumbers?: (string | number | null | undefined)[]; }
@@ -131,7 +142,7 @@ export async function recognizeMeterImage(image: Blob | File | string, options: 
       const allWords = [...cleaned, ...fallback];
       const excluded = new Set((options.excludeNumbers ?? []).filter((v) => v != null && String(v).trim() !== "").map((v) => normalizeSerial(String(v))));
       const serialProven = !known || allWords.some((w) => normalizeSerial(w.text) === known) || serialFoundInOcrText(rawText, known);
-      const candidates = allWords.map((w) => ({ ...w, shape: readingShape(w.text) })).filter((w) => w.shape.ok && w.shape.value != null && w.shape.value >= 0 && normalizeSerial(w.text) !== known && !excluded.has(normalizeSerial(w.text)) && !UNIT_RE.test(w.text.trim()) && !DATE_RE.test(normalizeDigits(w.text.trim())));
+      const candidates = allWords.map((w) => ({ ...w, shape: readingShape(w.text) })).filter((w) => w.shape.ok && w.shape.value != null && w.shape.value >= 0 && !isTechnicalNumberToken(w.text) && normalizeSerial(w.text) !== known && !excluded.has(normalizeSerial(w.text)) && !UNIT_RE.test(w.text.trim()) && !DATE_RE.test(normalizeDigits(w.text.trim())));
       const prev = options.previousReading ?? null;
       const scored = candidates.map((c) => { const digitLen = normalizeDigits(c.text).replace(/\D/g, "").length; let score = c.height * 2 + c.confidence + digitLen * 8; if (prev != null && c.shape.value != null) { if (c.shape.value >= prev) score += 25; if (Math.abs(c.shape.value - prev) <= Math.max(50, prev * 0.5)) score += 25; } return { ...c, score }; }).sort((a, b) => b.score - a.score);
       const filteredPrev = scored.filter((c) => prev == null || c.shape.value !== prev); const seen = new Set<number>(); const usable = filteredPrev.filter((c) => { const v = c.shape.value as number; if (seen.has(v)) return false; seen.add(v); return true; }); const best = usable[0] ?? null; const second = usable[1] ?? null; const readingAmbiguous = !!best && !!second && second.score >= best.score * 0.97;
