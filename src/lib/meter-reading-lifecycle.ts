@@ -2,7 +2,7 @@ export type VerificationTerminalState = "IDENTITY_FAILED" | "OCR_IMAGE_FAILURE" 
 
 export function classifyVerificationError(error: unknown): VerificationTerminalState {
   const message = error instanceof Error ? error.message : String(error ?? "");
-  if (error instanceof DOMException && error.name === "AbortError") return "TIMEOUT";
+  if (typeof DOMException !== "undefined" && error instanceof DOMException && error.name === "AbortError") return "TIMEOUT";
   if (/timeout|timed out|deadline|aborted/i.test(message)) return "TIMEOUT";
   if (/server|network|fetch|gateway|internal|rpc|status\s*5\d\d|\b5\d\d\b/i.test(message)) return "SERVER_ERROR";
   return "EXCEPTION";
