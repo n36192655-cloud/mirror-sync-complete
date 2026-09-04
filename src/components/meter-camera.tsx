@@ -27,7 +27,7 @@ async function captureOriginalFrame(
 ): Promise<{ file: File; previewUrl: string }> {
   const track = stream.getVideoTracks()[0];
 
-  if (typeof window !== "undefined" && "ImageCapture" in window && track) {
+  if (typeof window !== "undefined" && "ImageCapture" in window && track && track.readyState === "live") {
     try {
       const ImageCaptureCtor = (window as unknown as {
         ImageCapture: new (track: MediaStreamTrack) => {
@@ -35,8 +35,12 @@ async function captureOriginalFrame(
         };
       }).ImageCapture;
       const imageCapture = new ImageCaptureCtor(track);
-      const blob = await imageCapture.takePhoto();
-      if (blob.size > 0) {
+      // Some Android/WebView builds stall on takePhoto(); never let it block the shot.
+      const blob = await Promise.race([
+        imageCapture.takePhoto(),
+        new Promise<null>((resolve) => window.setTimeout(() => resolve(null), 1200)),
+      ]);
+      if (blob && blob.size > 0) {
         const extension = blob.type.includes("png") ? "png" : blob.type.includes("webp") ? "webp" : "jpg";
         const file = new File([blob], `meter_${Date.now()}.${extension}`, {
           type: blob.type || "image/jpeg",
@@ -48,6 +52,7 @@ async function captureOriginalFrame(
       console.warn("[Mizan] Native still capture unavailable; using stream-frame fallback", error);
     }
   }
+
 
   if (!video.videoWidth || !video.videoHeight) {
     throw new Error("camera frame is not ready");
@@ -75,17 +80,10 @@ async function captureOriginalFrame(
   return { file, previewUrl: URL.createObjectURL(file) };
 }
 
+// Kept intentionally short: every failed getUserMedia attempt costs the user real
+// seconds on mobile. `ideal` constraints degrade gracefully instead of throwing,
+// so one request satisfies phones and laptops alike; the rest are safety nets.
 const CONSTRAINT_CHAIN: MediaStreamConstraints[] = [
-  {
-    video: {
-      facingMode: { exact: "environment" },
-      width: { ideal: 2560 },
-      height: { ideal: 1440 },
-      frameRate: { ideal: 30, max: 30 },
-      ...({ resizeMode: "none" } as MediaTrackConstraints),
-    },
-    audio: false,
-  },
   {
     video: {
       facingMode: { ideal: "environment" },
@@ -95,10 +93,10 @@ const CONSTRAINT_CHAIN: MediaStreamConstraints[] = [
     },
     audio: false,
   },
-  { video: { width: { ideal: 1280 }, height: { ideal: 720 } }, audio: false },
   { video: { facingMode: { ideal: "environment" } }, audio: false },
   { video: true, audio: false },
 ];
+
 
 function describeCameraError(err: unknown): string {
   const name = (err as { name?: string })?.name ?? "";
@@ -244,13 +242,28 @@ export const MeterCamera: React.FC<MeterCameraProps> = ({
 
     const track = stream.getVideoTracks()[0];
     if (track) {
-      await optimizeTrackForMeterCapture(track);
+      // Focus/zoom hints are best-effort: applying them must not delay the preview.
+      void optimizeTrackForMeterCapture(track);
       const settings = track.getSettings();
       if (settings.width && settings.height) {
         setCameraResolution(`${settings.width}×${settings.height}`);
       }
     }
   }, []);
+
+  /** Resolve as soon as a real frame is painted, instead of waiting a fixed delay. */
+  const waitForFirstFrame = useCallback(async (video: HTMLVideoElement, maxMs = 350) => {
+    type RVFC = HTMLVideoElement & { requestVideoFrameCallback?: (cb: () => void) => number };
+    const withRvfc = video as RVFC;
+    await new Promise<void>((resolve) => {
+      let done = false;
+      const finish = () => { if (!done) { done = true; resolve(); } };
+      if (typeof withRvfc.requestVideoFrameCallback === "function") withRvfc.requestVideoFrameCallback(finish);
+      else requestAnimationFrame(() => finish());
+      window.setTimeout(finish, maxMs);
+    });
+  }, []);
+
 
   const startCamera = useCallback(async () => {
     if (disabled || previewUrl) return;
@@ -298,8 +311,8 @@ export const MeterCamera: React.FC<MeterCameraProps> = ({
 
     try {
       await attachStream(stream);
-      // Give autofocus/exposure a short stabilization window before accepting a shot.
-      await new Promise<void>((resolve) => window.setTimeout(resolve, 350));
+      // Ready as soon as the first real frame is painted (capped), not on a fixed delay.
+      if (videoRef.current) await waitForFirstFrame(videoRef.current);
       setIsStreamReady(true);
     } catch (err) {
       console.error("Camera preview error:", err);
@@ -308,7 +321,8 @@ export const MeterCamera: React.FC<MeterCameraProps> = ({
     } finally {
       setIsStarting(false);
     }
-  }, [attachStream, disabled, previewUrl, stopCamera]);
+  }, [attachStream, disabled, previewUrl, stopCamera, waitForFirstFrame]);
+
 
   const capturePhoto = useCallback(async () => {
     if (disabled || previewUrl || isCapturing) return;
