@@ -27,7 +27,7 @@ async function captureOriginalFrame(
 ): Promise<{ file: File; previewUrl: string }> {
   const track = stream.getVideoTracks()[0];
 
-  if (typeof window !== "undefined" && "ImageCapture" in window && track) {
+  if (typeof window !== "undefined" && "ImageCapture" in window && track && track.readyState === "live") {
     try {
       const ImageCaptureCtor = (window as unknown as {
         ImageCapture: new (track: MediaStreamTrack) => {
@@ -35,8 +35,12 @@ async function captureOriginalFrame(
         };
       }).ImageCapture;
       const imageCapture = new ImageCaptureCtor(track);
-      const blob = await imageCapture.takePhoto();
-      if (blob.size > 0) {
+      // Some Android/WebView builds stall on takePhoto(); never let it block the shot.
+      const blob = await Promise.race([
+        imageCapture.takePhoto(),
+        new Promise<null>((resolve) => window.setTimeout(() => resolve(null), 1200)),
+      ]);
+      if (blob && blob.size > 0) {
         const extension = blob.type.includes("png") ? "png" : blob.type.includes("webp") ? "webp" : "jpg";
         const file = new File([blob], `meter_${Date.now()}.${extension}`, {
           type: blob.type || "image/jpeg",
@@ -48,6 +52,7 @@ async function captureOriginalFrame(
       console.warn("[Mizan] Native still capture unavailable; using stream-frame fallback", error);
     }
   }
+
 
   if (!video.videoWidth || !video.videoHeight) {
     throw new Error("camera frame is not ready");
