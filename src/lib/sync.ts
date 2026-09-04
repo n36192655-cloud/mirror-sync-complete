@@ -4,6 +4,8 @@ import { supabase } from "./supabase";
 import { toast } from "sonner";
 import type { Database } from "@/integrations/supabase/types";
 import { STORE_BLOBS, STORE_QUEUE, idbDelete, idbGet, idbGetAll, idbPut, idbPutQueueWithPhoto, requestPersistentStorage } from "./offline-db";
+import { verifyMeterImage, saveVerifiedMeterReading } from "./meter-vision.functions";
+import { fileToDataUrl } from "./meter-ocr";
 
 type ReadingInsert = Database["public"]["Tables"]["water_readings"]["Insert"];
 const PHOTO_BUCKET = "meter-readings";
@@ -59,6 +61,8 @@ function isDailyMeterConflict(error: { code?: string; message?: string } | null)
   const msg = (error?.message ?? "").toLowerCase();
   return msg.includes("one_per_meter_day") || msg.includes("tenant_id, meter_id, reading_date") || msg.includes("water_readings_one_per_meter_day_uidx");
 }
+function localDateFromCreatedAt(createdAt: string) { return /^\d{4}-\d{2}-\d{2}T/.test(createdAt) ? createdAt.slice(0, 10) : ""; }
+function numericEqual(a: number, b: number) { return Number.isFinite(a) && Number.isFinite(b) && Object.is(a, b); }
 
 export async function addPending(p: Omit<PendingReading,"clientId"|"createdAt"|"status"|"attempts"> & {clientId?: string}, photo: Blob) {
   await ensureMigrated(); void requestPersistentStorage();
@@ -86,30 +90,23 @@ export async function syncPending(force=false): Promise<{synced:number;failed:nu
     for(const p of list){
       await setStatus(p,{status:"syncing"}); let photoPath=p.photoPath??null;
       try{
-        const {data:tenantRow,error:tenantError}=await supabase.rpc("current_tenant_id");
-        if(tenantError)throw new Error(`تعذّر تحديد المؤسسة الحالية: ${tenantError.message}`);
-        const tenantId=p.tenantId??(tenantRow as unknown as string|null); if(!tenantId)throw new Error("تعذّر تحديد المؤسسة الحالية");
-        if(!photoPath){
-          if(!p.hasPhoto)throw new Error("هذه القراءة المحلية لا تحتوي على صورة أصلية؛ لا يمكن مزامنتها بأمان.");
-          const blob=await getPendingPhoto(p.clientId); if(!blob)throw new Error("صورة القراءة غير موجودة في التخزين المحلي؛ لا يمكن مزامنة القراءة بأمان.");
-          validatePhoto(blob);
-          const path=`tenants/${tenantId}/readings/${p.clientId}.${extensionForType(blob.type)}`;
-          const up=await supabase.storage.from(PHOTO_BUCKET).upload(path,blob,{contentType:blob.type,upsert:true,cacheControl:"31536000"});
-          if(up.error)throw new Error(`رفع الصورة فشل: ${up.error.message}`);
-          photoPath=path; await setStatus(p,{status:"syncing",photoPath});
-        }
-        const {error}=await supabase.from("water_readings").insert({tenant_id:tenantId,customer_id:p.customerId,meter_id:p.meterId,current_reading:p.current,reading_date:p.readingDate,client_uuid:p.clientId,reader_id:p.by,photo_url:photoPath,lat:p.latitude??null,lng:p.longitude??null,accuracy:p.accuracy??null,gps_verified:p.latitude!=null} as ReadingInsert);
-        if(error&&isDailyMeterConflict(error)&&!isClientUuidConflict(error)){
-          if(photoPath) await supabase.storage.from(PHOTO_BUCKET).remove([photoPath]).catch(()=>undefined);
-          throw new Error("هذه القراءة لم تُزامن: يوجد بالفعل تسجيل ناجح لهذا العداد في نفس اليوم.");
-        }
-        if(error&&!isClientUuidConflict(error)){
-          if(photoPath) await supabase.storage.from(PHOTO_BUCKET).remove([photoPath]).catch(()=>undefined);
-          throw new Error(error.message);
-        }
+        if(!p.hasPhoto)throw new Error("هذه القراءة المحلية لا تحتوي على صورة أصلية؛ لا يمكن مزامنتها بأمان.");
+        const blob=await getPendingPhoto(p.clientId); if(!blob)throw new Error("صورة القراءة غير موجودة في التخزين المحلي؛ لا يمكن مزامنة القراءة بأمان.");
+        validatePhoto(blob);
+        const readingDate=p.readingDate??localDateFromCreatedAt(p.createdAt); if(!readingDate)throw new Error("تاريخ القراءة المحلي غير صالح؛ لا يمكن مزامنة القراءة بأمان.");
+        const originalImageDataUrl=await new Promise<string>((resolve,reject)=>{const reader=new FileReader();reader.onload=()=>resolve(String(reader.result));reader.onerror=()=>reject(reader.error??new Error("تعذر قراءة الصورة الأصلية"));reader.readAsDataURL(blob);});
+        const imageDataUrl=await fileToDataUrl(blob);
+        const verified=await verifyMeterImage({data:{imageDataUrl,originalImageDataUrl,meterId:p.meterId,customerId:p.customerId,readingDate,clientUuid:p.clientId}});
+        if(verified.serialMatch!=="match"||verified.meterNumber==null)throw new Error("رفضت المزامنة: هوية العداد في الصورة لا تطابق العداد المرتبط.");
+        if(verified.readingValue==null||verified.ambiguous)throw new Error("رفضت المزامنة: تعذر استخراج قراءة واضحة من الصورة الأصلية.");
+        if(!numericEqual(verified.readingValue,p.current))throw new Error(`رفضت المزامنة: القراءة المحلية (${p.current}) لا تطابق القراءة التي تحقق منها الخادم (${verified.readingValue}).`);
+        if(!verified.verificationToken)throw new Error("رفضت المزامنة: لم يصدر إثبات تحقق صالح.");
+        const saved=await saveVerifiedMeterReading({data:{originalImageDataUrl,verificationToken:verified.verificationToken,latitude:p.latitude??null,longitude:p.longitude??null,gpsVerified:p.latitude!=null}});
+        if(!saved.saved||!saved.readingId)throw new Error("لم يؤكد الخادم حفظ القراءة.");
+        photoPath=saved.evidencePath;
         await setStatus(p,{status:"synced",photoPath:photoPath??undefined,syncedAt:new Date().toISOString(),lastError:undefined});
         await idbDelete(STORE_BLOBS,p.clientId); synced++;
-        void broadcastTenantEvent(tenantId,"reading",{customerId:p.customerId,meterNumber:p.meterNumber,current:p.current,by:p.by,at:new Date().toISOString()});
+        const tenantId=p.tenantId; if(tenantId)void broadcastTenantEvent(tenantId,"reading",{customerId:p.customerId,meterNumber:p.meterNumber,current:saved.readingValue,by:p.by,at:new Date().toISOString()});
       }catch(e){ failed++; const message=e instanceof Error?e.message:String(e); await setStatus(p,{status:"failed",attempts:p.attempts+1,lastAttemptAt:new Date().toISOString(),lastError:message,photoPath:photoPath??p.photoPath}); }
     }
     await pruneSynced();
