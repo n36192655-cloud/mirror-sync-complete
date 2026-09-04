@@ -2,13 +2,10 @@ import { useCallback, useEffect, useState } from "react";
 import { useStore } from "./store";
 import { supabase } from "./supabase";
 import { toast } from "sonner";
-import type { Database } from "@/integrations/supabase/types";
 import { STORE_BLOBS, STORE_QUEUE, idbDelete, idbGet, idbGetAll, idbPut, idbPutQueueWithPhoto, requestPersistentStorage } from "./offline-db";
 import { verifyMeterImage, saveVerifiedMeterReading } from "./meter-vision.functions";
 import { fileToDataUrl } from "./meter-ocr";
 
-type ReadingInsert = Database["public"]["Tables"]["water_readings"]["Insert"];
-const PHOTO_BUCKET = "meter-readings";
 const MAX_PHOTO_BYTES = 25 * 1024 * 1024;
 const ALLOWED_IMAGE_TYPES = new Set(["image/jpeg", "image/jpg", "image/png", "image/webp"]);
 export type QueueStatus = "pending" | "syncing" | "synced" | "failed";
@@ -48,18 +45,6 @@ export function isUnsynced(p: PendingReading) { return p.status !== "synced"; }
 function validatePhoto(blob: Blob) {
   if (!ALLOWED_IMAGE_TYPES.has(blob.type)) throw new Error("صيغة صورة العداد غير مدعومة. استخدم JPG أو PNG أو WebP.");
   if (blob.size <= 0 || blob.size > MAX_PHOTO_BYTES) throw new Error("حجم صورة العداد غير صالح أو كبير جداً.");
-}
-function extensionForType(type?: string) { return type === "image/png" ? "png" : type === "image/webp" ? "webp" : "jpg"; }
-function isUniqueViolation(error: { code?: string; message?: string } | null) { return error?.code === "23505"; }
-function isClientUuidConflict(error: { code?: string; message?: string } | null) {
-  if (!isUniqueViolation(error)) return false;
-  const msg = (error?.message ?? "").toLowerCase();
-  return msg.includes("client_uuid") || msg.includes("water_readings_client_uuid_uidx");
-}
-function isDailyMeterConflict(error: { code?: string; message?: string } | null) {
-  if (!isUniqueViolation(error)) return false;
-  const msg = (error?.message ?? "").toLowerCase();
-  return msg.includes("one_per_meter_day") || msg.includes("tenant_id, meter_id, reading_date") || msg.includes("water_readings_one_per_meter_day_uidx");
 }
 function localDateFromCreatedAt(createdAt: string) { return /^\d{4}-\d{2}-\d{2}T/.test(createdAt) ? createdAt.slice(0, 10) : ""; }
 function numericEqual(a: number, b: number) { return Number.isFinite(a) && Number.isFinite(b) && Object.is(a, b); }
