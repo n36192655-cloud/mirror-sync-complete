@@ -95,21 +95,44 @@ async function preprocess(image: Blob | File | string): Promise<HTMLCanvasElemen
 /** Compatibility signature retained for callers. maxSide/quality are intentionally ignored: no compression or re-encoding occurs. */
 export async function imageToCompressedDataUrl(file: Blob, _maxSide?: number, _quality?: number): Promise<string> { return fileToDataUrl(file); }
 
-const MAX_VISION_DATA_URL_LENGTH = 7_500_000; const MAX_VISION_SIDE = 2200;
+const MAX_VISION_DATA_URL_LENGTH = 7_500_000; const MAX_VISION_SIDE = 1600;
 function blobToDataUrl(file: Blob): Promise<string> { return new Promise((resolve, reject) => { const reader = new FileReader(); reader.onload = () => resolve(String(reader.result)); reader.onerror = () => reject(reader.error ?? new Error("تعذر قراءة الصورة")); reader.readAsDataURL(file); }); }
 
+async function decodeImage(file: Blob): Promise<{ width: number; height: number; draw: (ctx: CanvasRenderingContext2D, w: number, h: number) => void; close: () => void }> {
+  if (typeof createImageBitmap === "function") {
+    const bitmap = await createImageBitmap(file);
+    return { width: bitmap.width, height: bitmap.height, draw: (ctx, w, h) => ctx.drawImage(bitmap, 0, 0, w, h), close: () => bitmap.close() };
+  }
+  const src = URL.createObjectURL(file);
+  const img = new Image();
+  await new Promise<void>((resolve, reject) => { img.onload = () => resolve(); img.onerror = () => reject(new Error("تعذر تجهيز الصورة للتحليل")); img.src = src; });
+  return { width: img.naturalWidth, height: img.naturalHeight, draw: (ctx, w, h) => ctx.drawImage(img, 0, 0, w, h), close: () => URL.revokeObjectURL(src) };
+}
+
+/**
+ * Builds the *working copy* sent to the vision model. The original capture is never
+ * modified or replaced: this derived JPEG exists only to keep the upload — and therefore
+ * the round-trip latency — small. A 1600px meter photo still carries every digit.
+ */
 async function createVisionDataUrl(file: Blob): Promise<string> {
   await assertMeterImageQuality(file);
-  const original = await blobToDataUrl(file); if (original.length <= MAX_VISION_DATA_URL_LENGTH) return original; if (typeof window === "undefined") throw new Error("تحليل الصورة متاح في المتصفح فقط");
-  const src = URL.createObjectURL(file);
+  if (typeof window === "undefined") throw new Error("تحليل الصورة متاح في المتصفح فقط");
+  const decoded = await decodeImage(file);
   try {
-    const img = new Image(); await new Promise<void>((resolve, reject) => { img.onload = () => resolve(); img.onerror = () => reject(new Error("تعذر تجهيز الصورة للتحليل")); img.src = src; });
-    const scale = Math.min(1, MAX_VISION_SIDE / Math.max(img.naturalWidth, img.naturalHeight)); const width = Math.max(1, Math.round(img.naturalWidth * scale)); const height = Math.max(1, Math.round(img.naturalHeight * scale));
-    const canvas = document.createElement("canvas"); canvas.width = width; canvas.height = height; const ctx = canvas.getContext("2d"); if (!ctx) throw new Error("تعذر تجهيز الصورة للتحليل"); ctx.drawImage(img, 0, 0, width, height);
-    let quality = 0.88;
-    for (let attempt = 0; attempt < 5; attempt += 1) { const candidate = canvas.toDataURL("image/jpeg", quality); if (candidate.length <= MAX_VISION_DATA_URL_LENGTH) return candidate; quality -= 0.1; }
-    const fallback = canvas.toDataURL("image/jpeg", 0.45); if (fallback.length > MAX_VISION_DATA_URL_LENGTH) throw new Error("تعذر تجهيز نسخة تحليل مناسبة للصورة؛ احتفظنا بالصورة الأصلية كما هي."); return fallback;
-  } finally { URL.revokeObjectURL(src); }
+    const longest = Math.max(decoded.width, decoded.height);
+    if (longest <= MAX_VISION_SIDE && file.size <= 1_200_000) {
+      const original = await blobToDataUrl(file);
+      if (original.length <= MAX_VISION_DATA_URL_LENGTH) return original;
+    }
+    const scale = Math.min(1, MAX_VISION_SIDE / longest);
+    const width = Math.max(1, Math.round(decoded.width * scale)); const height = Math.max(1, Math.round(decoded.height * scale));
+    const canvas = document.createElement("canvas"); canvas.width = width; canvas.height = height;
+    const ctx = canvas.getContext("2d", { alpha: false }); if (!ctx) throw new Error("تعذر تجهيز الصورة للتحليل");
+    ctx.imageSmoothingQuality = "high"; decoded.draw(ctx, width, height);
+    let quality = 0.85;
+    for (let attempt = 0; attempt < 4; attempt += 1) { const candidate = canvas.toDataURL("image/jpeg", quality); if (candidate.length <= MAX_VISION_DATA_URL_LENGTH) return candidate; quality -= 0.15; }
+    throw new Error("تعذر تجهيز نسخة تحليل مناسبة للصورة؛ أعد التصوير من مسافة أقرب.");
+  } finally { decoded.close(); }
 }
 
 export async function fileToDataUrl(file: Blob): Promise<string> { return createVisionDataUrl(file); }
