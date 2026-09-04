@@ -13,11 +13,14 @@ describe("meter verification lifecycle", () => {
     const start = source.indexOf("async function handleCapture");
     const end = source.indexOf("async function captureGeo", start);
     const handleCapture = source.slice(start, end);
+    const failureStart = source.indexOf("function finishVerificationFailure");
+    const failureEnd = source.indexOf("function pickCustomer", failureStart);
+    const failureHelper = source.slice(failureStart, failureEnd);
 
     expect(handleCapture).toContain("finishVerificationFailure(\"IDENTITY_FAILED\"");
     expect(handleCapture).not.toContain("setPipelineState(\"IDENTITY_FAILED\"); clearPipeline()");
     expect(handleCapture).toContain("finally { if (captureSequenceRef.current === captureToken) setOcrBusy(false); captureStartedRef.current = null; }");
-    expect(handleCapture).toContain("resetVerificationArtifacts()");
+    expect(failureHelper).toContain("resetVerificationArtifacts()");
     expect(source).toContain("setPipelineState(\"READY_TO_SAVE\")");
   });
 
