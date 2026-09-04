@@ -25,6 +25,8 @@ const LOCAL_TESSERACT_ASSETS = [
 ] as const;
 
 let prewarmed: Promise<boolean> | null = null;
+let localWorkerPromise: Promise<Awaited<ReturnType<typeof import("tesseract.js").createWorker>>> | null = null;
+let localWorkerQueue = Promise.resolve();
 
 export function prewarmOcrAssets(): Promise<boolean> {
   if (typeof window === "undefined") return Promise.resolve(false);
@@ -109,11 +111,6 @@ async function decodeImage(file: Blob): Promise<{ width: number; height: number;
   return { width: img.naturalWidth, height: img.naturalHeight, draw: (ctx, w, h) => ctx.drawImage(img, 0, 0, w, h), close: () => URL.revokeObjectURL(src) };
 }
 
-/**
- * Builds the *working copy* sent to the vision model. The original capture is never
- * modified or replaced: this derived JPEG exists only to keep the upload — and therefore
- * the round-trip latency — small. A 1600px meter photo still carries every digit.
- */
 async function createVisionDataUrl(file: Blob): Promise<string> {
   await assertMeterImageQuality(file);
   if (typeof window === "undefined") throw new Error("تحليل الصورة متاح في المتصفح فقط");
@@ -137,16 +134,36 @@ async function createVisionDataUrl(file: Blob): Promise<string> {
 
 export async function fileToDataUrl(file: Blob): Promise<string> { return createVisionDataUrl(file); }
 
+async function getLocalWorker(deadline: ReturnType<typeof createMeterReadingDeadline>) {
+  if (!localWorkerPromise) {
+    localWorkerPromise = withMeterReadingDeadline(import("tesseract.js"), deadline)
+      .then(({ createWorker }) => withMeterReadingDeadline(createWorker("eng", 1, LOCAL_TESSERACT_OPTIONS), deadline))
+      .catch((error) => { localWorkerPromise = null; throw error; });
+  }
+  return withMeterReadingDeadline(localWorkerPromise, deadline);
+}
+
+export async function disposeLocalOcrWorker(): Promise<void> {
+  const workerPromise = localWorkerPromise;
+  localWorkerPromise = null;
+  if (!workerPromise) return;
+  try { const worker = await workerPromise; await worker.terminate(); } catch { /* best-effort cleanup */ }
+}
+
 export async function recognizeMeterImage(image: Blob | File | string, options: RecognizeOptions = {}): Promise<MeterOcrResult> {
   if (typeof window === "undefined") throw new Error("OCR متاح في المتصفح فقط");
   const deadline = createMeterReadingDeadline();
   if (typeof image !== "string") await withMeterReadingDeadline(assertMeterImageQuality(image), deadline);
-  const { createWorker } = await withMeterReadingDeadline(import("tesseract.js"), deadline);
-  const worker = await withMeterReadingDeadline(createWorker("eng", 1, LOCAL_TESSERACT_OPTIONS), deadline);
+  const previousRun = localWorkerQueue;
+  let releaseQueue: (() => void) | undefined;
+  localWorkerQueue = new Promise<void>((resolve) => { releaseQueue = resolve; });
+  await withMeterReadingDeadline(previousRun, deadline);
+  let worker: Awaited<ReturnType<typeof import("tesseract.js").createWorker>> | null = null;
   try {
+    worker = await getLocalWorker(deadline);
     const run = async () => {
       const input = await preprocess(image); deadline.assertWithinDeadline();
-      const general = await worker.recognize(input as never, {}, { text: true, blocks: true } as never);
+      const general = await worker!.recognize(input as never, {}, { text: true, blocks: true } as never);
       const rawText = general.data.text ?? "";
       const cleaned = flattenWords(general.data).filter((w) => w.text.length > 0);
       const known = options.knownMeterNumber ? normalizeSerial(options.knownMeterNumber) : "";
@@ -165,9 +182,20 @@ export async function recognizeMeterImage(image: Blob | File | string, options: 
       deadline.assertWithinDeadline();
       return { rawText, tokens, meterNumberMatch, readingCandidate: best?.text ?? null, readingValue: best?.shape.value ?? null, readingConfidence: best ? Math.round(best.confidence) : 0, readingAmbiguous: false, otherTokens: tokens.filter((t) => t.kind !== "reading") };
     };
-    return await withMeterReadingDeadline(run(), deadline);
+    try {
+      return await withMeterReadingDeadline(run(), deadline);
+    } catch (error) {
+      if (error instanceof MeterReadingTimeoutError) throw error;
+      throw error;
+    }
   } catch (error) {
+    if (worker && localWorkerPromise) {
+      localWorkerPromise = null;
+      try { await worker.terminate(); } catch { /* best-effort worker recovery */ }
+    }
     if (error instanceof MeterReadingTimeoutError) throw error;
     throw error;
-  } finally { await worker.terminate(); }
+  } finally {
+    releaseQueue?.();
+  }
 }
