@@ -80,17 +80,10 @@ async function captureOriginalFrame(
   return { file, previewUrl: URL.createObjectURL(file) };
 }
 
+// Kept intentionally short: every failed getUserMedia attempt costs the user real
+// seconds on mobile. `ideal` constraints degrade gracefully instead of throwing,
+// so one request satisfies phones and laptops alike; the rest are safety nets.
 const CONSTRAINT_CHAIN: MediaStreamConstraints[] = [
-  {
-    video: {
-      facingMode: { exact: "environment" },
-      width: { ideal: 2560 },
-      height: { ideal: 1440 },
-      frameRate: { ideal: 30, max: 30 },
-      ...({ resizeMode: "none" } as MediaTrackConstraints),
-    },
-    audio: false,
-  },
   {
     video: {
       facingMode: { ideal: "environment" },
@@ -100,10 +93,10 @@ const CONSTRAINT_CHAIN: MediaStreamConstraints[] = [
     },
     audio: false,
   },
-  { video: { width: { ideal: 1280 }, height: { ideal: 720 } }, audio: false },
   { video: { facingMode: { ideal: "environment" } }, audio: false },
   { video: true, audio: false },
 ];
+
 
 function describeCameraError(err: unknown): string {
   const name = (err as { name?: string })?.name ?? "";
