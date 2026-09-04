@@ -4,20 +4,6 @@
 
 @custom-variant dark (&:is(.dark *));
 
-/*
- * Design system definition.
- *
- * The @theme inline block maps CSS custom properties to Tailwind utility
- * classes (e.g. --color-primary -> bg-primary, text-primary).
- *
- * The :root and .dark blocks define the actual color values using oklch.
- * All colors MUST use oklch format.
- *
- * To add a new semantic color:
- * 1. Add the variable to :root (light value) and .dark (dark value)
- * 2. Register it in @theme inline as --color-<name>: var(--<name>)
- */
-
 @theme inline {
   --radius-sm: calc(var(--radius) - 4px);
   --radius-md: calc(var(--radius) - 2px);
@@ -69,24 +55,24 @@
   --card-foreground: oklch(0.20 0.03 250);
   --popover: oklch(1 0 0);
   --popover-foreground: oklch(0.20 0.03 250);
-  --primary: oklch(0.52 0.15 235);           /* #0077B6 water */
+  --primary: oklch(0.52 0.15 235);
   --primary-foreground: oklch(0.99 0 0);
-  --secondary: oklch(0.72 0.13 220);         /* #00B4D8 */
+  --secondary: oklch(0.72 0.13 220);
   --secondary-foreground: oklch(0.15 0.02 250);
   --muted: oklch(0.96 0.01 230);
   --muted-foreground: oklch(0.48 0.03 250);
-  --accent: oklch(0.95 0.03 230);            /* #E6F7FF */
+  --accent: oklch(0.95 0.03 230);
   --accent-foreground: oklch(0.20 0.03 250);
   --destructive: oklch(0.60 0.24 27);
   --destructive-foreground: oklch(0.984 0.003 247.858);
   --border: oklch(0.90 0.02 230);
   --input: oklch(0.92 0.02 230);
   --ring: oklch(0.52 0.15 235);
-  --chart-1: oklch(0.52 0.15 235);           /* water blue */
-  --chart-2: oklch(0.72 0.13 220);           /* cyan */
-  --chart-3: oklch(0.78 0.17 80);            /* electric yellow */
-  --chart-4: oklch(0.68 0.19 55);            /* electric orange */
-  --chart-5: oklch(0.35 0.03 250);           /* dark slate */
+  --chart-1: oklch(0.52 0.15 235);
+  --chart-2: oklch(0.72 0.13 220);
+  --chart-3: oklch(0.78 0.17 80);
+  --chart-4: oklch(0.68 0.19 55);
+  --chart-5: oklch(0.35 0.03 250);
   --sidebar: oklch(0.22 0.03 250);
   --sidebar-foreground: oklch(0.97 0.01 230);
   --sidebar-primary: oklch(0.72 0.13 220);
@@ -95,7 +81,6 @@
   --sidebar-accent-foreground: oklch(0.97 0.01 230);
   --sidebar-border: oklch(0.30 0.04 250);
   --sidebar-ring: oklch(0.72 0.13 220);
-  /* brand */
   --water: oklch(0.52 0.15 235);
   --water-2: oklch(0.72 0.13 220);
   --water-soft: oklch(0.95 0.03 230);
@@ -140,38 +125,25 @@
 }
 
 @layer base {
-  * {
-    border-color: var(--color-border);
-  }
-
+  * { border-color: var(--color-border); }
   body {
     background-color: var(--color-background);
     color: var(--color-foreground);
     font-family: "Cairo", "Tajawal", system-ui, -apple-system, sans-serif;
   }
-
-  html {
-    direction: rtl;
-  }
+  html { direction: rtl; }
 }
 
-@utility bg-water {
-  background-color: var(--water);
-  color: white;
-}
-@utility bg-electric {
-  background-color: var(--electric-2);
-  color: white;
-}
+@utility bg-water { background-color: var(--water); color: white; }
+@utility bg-electric { background-color: var(--electric-2); color: white; }
 @utility text-water { color: var(--water); }
 @utility text-electric { color: var(--electric-2); }
 @utility bg-water-soft { background-color: var(--water-soft); }
 @utility bg-electric-soft { background-color: var(--electric-soft); }
 
-/* ── طباعة/تصدير PDF ──────────────────────────────────────────────
-   بدون هذه القواعد كان window.print() يُخرج التطبيق بالكامل (الشريط
-   الجانبي + جداول الفواتير/التحصيل الطويلة)، فتتأخر معاينة PDF كثيراً.
-   الآن يُطبع الإيصال (#printable) وحده فقط. */
+/* Invoice printing is deliberately isolated from the Dialog's layout.
+   Do not use display:none on arbitrary ancestors: Radix Dialog renders through
+   a portal and its overflow/transform rules can otherwise clip the invoice. */
 @media print {
   @page {
     size: A4 portrait;
@@ -180,36 +152,80 @@
 
   html,
   body {
-    background: #fff !important;
-  }
-
-  /* اخفِ كل ما ليس الإيصال ولا يحتويه ولا هو داخله */
-  body:has(#printable) *:not(:has(#printable)):not(#printable):not(#printable *) {
-    display: none !important;
-  }
-
-  /* اجعل سلسلة الحاويات (بما فيها نافذة الحوار) شفافة وبلا تحويلات */
-  body:has(#printable) *:has(#printable) {
-    display: block !important;
-    position: static !important;
-    transform: none !important;
-    inset: auto !important;
+    width: 100% !important;
+    min-width: 0 !important;
     max-width: none !important;
-    width: auto !important;
-    max-height: none !important;
+    min-height: 100% !important;
     height: auto !important;
     margin: 0 !important;
     padding: 0 !important;
-    border: 0 !important;
-    box-shadow: none !important;
     background: #fff !important;
+  }
+
+  /* Hide the application visually, while keeping the portal subtree in the
+     layout tree so #printable cannot be clipped by display:none ancestors. */
+  body > * {
+    visibility: hidden !important;
+  }
+
+  body #printable,
+  body #printable * {
+    visibility: visible !important;
+  }
+
+  /* Neutralize the Dialog/portal layout constraints around the invoice. */
+  body:has(#printable) *:has(#printable) {
+    max-width: none !important;
+    max-height: none !important;
+    height: auto !important;
     overflow: visible !important;
+    transform: none !important;
     animation: none !important;
   }
 
   #printable {
-    border: 0 !important;
-    box-shadow: none !important;
+    position: fixed !important;
+    inset: 0 !important;
+    width: 100% !important;
+    max-width: none !important;
+    height: auto !important;
+    min-height: 0 !important;
+    margin: 0 !important;
     padding: 0 !important;
+    border: 0 !important;
+    border-radius: 0 !important;
+    box-shadow: none !important;
+    overflow: visible !important;
+    background: #fff !important;
+    color: #111827 !important;
+    direction: rtl !important;
+    text-align: right !important;
+    font-family: "Cairo", "Tajawal", Arial, sans-serif !important;
+    box-sizing: border-box !important;
+  }
+
+  #printable * {
+    box-sizing: border-box !important;
+  }
+
+  #printable header,
+  #printable section,
+  #printable footer {
+    break-inside: avoid;
+    page-break-inside: avoid;
+  }
+
+  #printable table,
+  #printable tr {
+    break-inside: avoid;
+    page-break-inside: avoid;
+  }
+
+  #printable h1,
+  #printable h2,
+  #printable h3,
+  #printable p {
+    orphans: 3;
+    widows: 3;
   }
 }
