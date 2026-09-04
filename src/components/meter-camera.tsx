@@ -311,8 +311,8 @@ export const MeterCamera: React.FC<MeterCameraProps> = ({
 
     try {
       await attachStream(stream);
-      // Give autofocus/exposure a short stabilization window before accepting a shot.
-      await new Promise<void>((resolve) => window.setTimeout(resolve, 350));
+      // Ready as soon as the first real frame is painted (capped), not on a fixed delay.
+      if (videoRef.current) await waitForFirstFrame(videoRef.current);
       setIsStreamReady(true);
     } catch (err) {
       console.error("Camera preview error:", err);
@@ -321,7 +321,8 @@ export const MeterCamera: React.FC<MeterCameraProps> = ({
     } finally {
       setIsStarting(false);
     }
-  }, [attachStream, disabled, previewUrl, stopCamera]);
+  }, [attachStream, disabled, previewUrl, stopCamera, waitForFirstFrame]);
+
 
   const capturePhoto = useCallback(async () => {
     if (disabled || previewUrl || isCapturing) return;
