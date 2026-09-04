@@ -242,13 +242,28 @@ export const MeterCamera: React.FC<MeterCameraProps> = ({
 
     const track = stream.getVideoTracks()[0];
     if (track) {
-      await optimizeTrackForMeterCapture(track);
+      // Focus/zoom hints are best-effort: applying them must not delay the preview.
+      void optimizeTrackForMeterCapture(track);
       const settings = track.getSettings();
       if (settings.width && settings.height) {
         setCameraResolution(`${settings.width}×${settings.height}`);
       }
     }
   }, []);
+
+  /** Resolve as soon as a real frame is painted, instead of waiting a fixed delay. */
+  const waitForFirstFrame = useCallback(async (video: HTMLVideoElement, maxMs = 350) => {
+    type RVFC = HTMLVideoElement & { requestVideoFrameCallback?: (cb: () => void) => number };
+    const withRvfc = video as RVFC;
+    await new Promise<void>((resolve) => {
+      let done = false;
+      const finish = () => { if (!done) { done = true; resolve(); } };
+      if (typeof withRvfc.requestVideoFrameCallback === "function") withRvfc.requestVideoFrameCallback(finish);
+      else requestAnimationFrame(() => finish());
+      window.setTimeout(finish, maxMs);
+    });
+  }, []);
+
 
   const startCamera = useCallback(async () => {
     if (disabled || previewUrl) return;
