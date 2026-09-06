@@ -111,6 +111,14 @@ export interface Reading {
   by?: string;
 }
 
+export type BillStatus = "unpaid" | "paid" | "partial";
+
+export function normalizeBillStatus(raw: string | null | undefined): BillStatus {
+  if (raw === "paid") return "paid";
+  if (raw === "partial" || raw === "partially_paid") return "partial";
+  return "unpaid";
+}
+
 export interface Bill {
   id: number;
   serial: string;
@@ -121,7 +129,7 @@ export interface Bill {
   arrears: number;
   total: number;
   paid?: number;
-  status: "unpaid" | "paid" | "partial";
+  status: BillStatus;
   date: string;
   photo?: string;
 }
@@ -473,7 +481,7 @@ export const useStore = create<State>()(
             reading_id: b.reading_id ? hashId(b.reading_id) : 0,
             subtotal: Number(b.subtotal), arrears: Number(b.arrears), total: Number(b.total),
             paid: Number(b.paid_amount ?? 0),
-            status: (b.status as Bill["status"]) ?? "unpaid",
+            status: normalizeBillStatus(b.status as string | null | undefined),
             date: b.issued_at,
           };
         });
