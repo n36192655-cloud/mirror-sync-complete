@@ -168,48 +168,211 @@
 @utility bg-water-soft { background-color: var(--water-soft); }
 @utility bg-electric-soft { background-color: var(--electric-soft); }
 
+/* ── فاتورة الشاشة والطباعة ─────────────────────────────────────────── */
+
+.invoice-preview {
+  background: #fff;
+  color: #0f172a;
+  border: 1px solid #e2e8f0;
+  border-radius: 0.5rem;
+}
+
+.invoice-document {
+  box-sizing: border-box;
+  width: 100%;
+  max-width: 190mm;
+  margin: 0 auto;
+  padding: 7mm;
+  background: #fff;
+  color: #0f172a;
+  font-family: "Cairo", "Tajawal", Arial, sans-serif;
+  line-height: 1.6;
+}
+
+.invoice-header {
+  text-align: center;
+  border-bottom: 1px solid #cbd5e1;
+  padding-bottom: 4mm;
+  margin-bottom: 5mm;
+}
+
+.invoice-brand {
+  color: var(--water);
+  font-size: 24px;
+  font-weight: 900;
+}
+
+.invoice-subtitle,
+.invoice-label,
+.invoice-thanks {
+  color: #64748b;
+}
+
+.invoice-subtitle,
+.invoice-serial,
+.invoice-label,
+.invoice-thanks {
+  font-size: 12px;
+}
+
+.invoice-serial {
+  margin-top: 2mm;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: #334155;
+}
+
+.invoice-details {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 4mm;
+  font-size: 14px;
+}
+
+.invoice-field {
+  min-width: 0;
+}
+
+.invoice-field-wide {
+  grid-column: 1 / -1;
+}
+
+.invoice-label {
+  font-size: 11px;
+  margin-bottom: 1mm;
+}
+
+.invoice-value {
+  overflow-wrap: anywhere;
+}
+
+.invoice-value.strong,
+.strong {
+  font-weight: 700;
+}
+
+.invoice-value.ltr,
+.ltr {
+  direction: ltr;
+  text-align: right;
+}
+
+.invoice-value.mono,
+.mono {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.invoice-financials {
+  margin-top: 6mm;
+  padding-top: 4mm;
+  border-top: 1px solid #cbd5e1;
+  font-size: 14px;
+}
+
+.invoice-line,
+.invoice-total {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8mm;
+  padding: 1.5mm 0;
+}
+
+.invoice-arrears {
+  color: #b91c1c;
+}
+
+.invoice-total {
+  margin-top: 2mm;
+  padding-top: 3mm;
+  border-top: 1px solid #cbd5e1;
+  color: #0f172a;
+  font-size: 18px;
+  font-weight: 700;
+}
+
+.invoice-total strong {
+  color: var(--water);
+}
+
+.invoice-thanks {
+  text-align: center;
+  margin-top: 5mm;
+}
+
+#print-root {
+  display: none;
+}
+
 /* ── طباعة/تصدير PDF ──────────────────────────────────────────────
-   بدون هذه القواعد كان window.print() يُخرج التطبيق بالكامل (الشريط
-   الجانبي + جداول الفواتير/التحصيل الطويلة)، فتتأخر معاينة PDF كثيراً.
-   الآن يُطبع الإيصال (#printable) وحده فقط. */
+   مسار الطباعة معزول عن Modal/Dialog وعن شجرة التطبيق بالكامل.
+   لذلك لا تتأثر الفاتورة بـ transform أو overflow أو fixed positioning
+   الخاصة بمكوّن Radix Dialog. */
 @media print {
   @page {
     size: A4 portrait;
-    margin: 10mm;
+    margin: 0;
   }
 
   html,
   body {
+    width: 210mm;
+    min-height: 297mm;
+    margin: 0 !important;
+    padding: 0 !important;
     background: #fff !important;
   }
 
-  /* اخفِ كل ما ليس الإيصال ولا يحتويه ولا هو داخله */
-  body:has(#printable) *:not(:has(#printable)):not(#printable):not(#printable *) {
+  /* اطبع الجذر المخصص فقط؛ كل التطبيق والـModal يبقيان خارج مستند الطباعة. */
+  body > *:not(#print-root) {
     display: none !important;
   }
 
-  /* اجعل سلسلة الحاويات (بما فيها نافذة الحوار) شفافة وبلا تحويلات */
-  body:has(#printable) *:has(#printable) {
+  #print-root {
     display: block !important;
-    position: static !important;
-    transform: none !important;
-    inset: auto !important;
+    box-sizing: border-box !important;
+    width: 210mm !important;
+    min-height: 297mm !important;
+    padding: 10mm !important;
+    margin: 0 !important;
+    background: #fff !important;
+    color: #0f172a !important;
+  }
+
+  #print-root .invoice-document {
+    display: block !important;
+    width: 100% !important;
     max-width: none !important;
-    width: auto !important;
-    max-height: none !important;
-    height: auto !important;
+    min-height: auto !important;
     margin: 0 !important;
     padding: 0 !important;
     border: 0 !important;
     box-shadow: none !important;
     background: #fff !important;
-    overflow: visible !important;
-    animation: none !important;
+    color: #0f172a !important;
+    break-inside: avoid;
   }
 
-  #printable {
-    border: 0 !important;
-    box-shadow: none !important;
-    padding: 0 !important;
+  #print-root .invoice-header,
+  #print-root .invoice-details,
+  #print-root .invoice-financials,
+  #print-root .invoice-thanks {
+    break-inside: avoid;
+  }
+
+  #print-root .invoice-details {
+    display: grid !important;
+    grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+  }
+
+  #print-root * {
+    visibility: visible !important;
+  }
+
+  /* طباعة الألوان والخلفيات كما صُممت عند دعم المتصفح. */
+  #print-root,
+  #print-root * {
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
   }
 }
+

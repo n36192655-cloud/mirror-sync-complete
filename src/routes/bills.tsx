@@ -1,5 +1,6 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useState, useMemo } from "react";
+import { createPortal } from "react-dom";
 import { useStore, billBalance } from "@/lib/store";
 import { recordPayment } from "@/lib/financial-rpc";
 import { mappedUuid } from "@/lib/id-map";
@@ -274,6 +275,46 @@ function KuraimiDialog({ id, onClose, onPaid }: { id: number; onClose: () => voi
   );
 }
 
+function InvoiceDocument({
+  bill,
+  customer,
+  meter,
+  reading,
+}: {
+  bill: { serial: string; subtotal: number; arrears: number; total: number };
+  customer?: { name?: string | null; phone?: string | null; directorate?: string | null };
+  meter?: { number?: string | null };
+  reading?: { previous?: number | null; current?: number | null; consumption?: number | null };
+}) {
+  return (
+    <article className="invoice-document" dir="rtl">
+      <header className="invoice-header">
+        <div className="invoice-brand">ميزان</div>
+        <div className="invoice-subtitle">فاتورة مياه — تعز، اليمن</div>
+        <div className="invoice-serial" dir="ltr">{bill.serial}</div>
+      </header>
+
+      <section className="invoice-details">
+        <div className="invoice-field"><div className="invoice-label">المشترك</div><div className="invoice-value strong">{customer?.name ?? "—"}</div></div>
+        <div className="invoice-field"><div className="invoice-label">الهاتف</div><div className="invoice-value ltr">{customer?.phone ?? "—"}</div></div>
+        <div className="invoice-field"><div className="invoice-label">المديرية</div><div className="invoice-value">{customer?.directorate ?? "—"}</div></div>
+        <div className="invoice-field"><div className="invoice-label">رقم العداد</div><div className="invoice-value mono" dir="ltr">{meter?.number ?? "—"}</div></div>
+        <div className="invoice-field"><div className="invoice-label">القراءة السابقة</div><div className="invoice-value">{reading?.previous ?? "—"}</div></div>
+        <div className="invoice-field"><div className="invoice-label">القراءة الحالية</div><div className="invoice-value">{reading?.current ?? "—"}</div></div>
+        <div className="invoice-field invoice-field-wide"><div className="invoice-label">الاستهلاك</div><div className="invoice-value strong">{reading?.consumption ?? "—"} م³</div></div>
+      </section>
+
+      <section className="invoice-financials">
+        <div className="invoice-line"><span>استهلاك الشهر</span><strong>{fmtYER(bill.subtotal)}</strong></div>
+        {bill.arrears > 0 && <div className="invoice-line invoice-arrears"><span>متأخرات سابقة</span><strong>{fmtYER(bill.arrears)}</strong></div>}
+        <div className="invoice-total"><span>الإجمالي</span><strong>{fmtYER(bill.total)}</strong></div>
+      </section>
+
+      <footer className="invoice-thanks">شكراً لالتزامكم بالسداد</footer>
+    </article>
+  );
+}
+
 function PrintDialog({ id, onClose }: { id: number; onClose: () => void }) {
   const { bills, customers, meters, readings } = useStore();
   const b = bills.find((x) => x.id === id);
@@ -282,41 +323,28 @@ function PrintDialog({ id, onClose }: { id: number; onClose: () => void }) {
   const m = meters.find((x) => x.id === b.meter_id);
   const r = readings.find((x) => x.id === b.reading_id);
 
+  const invoice = <InvoiceDocument bill={b} customer={c} meter={m} reading={r} />;
+
   return (
-    <Dialog open onOpenChange={onClose}>
-      <DialogContent className="max-w-lg">
-        <DialogHeader><DialogTitle>{b.serial}</DialogTitle></DialogHeader>
-        <div id="printable" className="p-6 bg-white text-slate-900 rounded-lg border">
-          <div className="text-center border-b pb-3 mb-4">
-            <div className="text-2xl font-bold" style={{ color: "var(--water)" }}>ميزان</div>
-            <div className="text-xs text-slate-500 mt-1">فاتورة مياه — تعز، اليمن</div>
-            <div className="text-xs font-mono mt-1">{b.serial}</div>
+    <>
+      <Dialog open onOpenChange={onClose}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader><DialogTitle>{b.serial}</DialogTitle></DialogHeader>
+          <div className="invoice-preview">
+            {invoice}
           </div>
-          <div className="grid grid-cols-2 gap-3 text-sm">
-            <div><div className="text-slate-500 text-xs">المشترك</div><div className="font-semibold">{c?.name}</div></div>
-            <div><div className="text-slate-500 text-xs">الهاتف</div><div dir="ltr" className="text-right">{c?.phone}</div></div>
-            <div><div className="text-slate-500 text-xs">المديرية</div><div>{c?.directorate ?? "—"}</div></div>
-            <div><div className="text-slate-500 text-xs">رقم العداد</div><div className="font-mono">{m?.number}</div></div>
-            <div><div className="text-slate-500 text-xs">القراءة السابقة</div><div>{r?.previous}</div></div>
-            <div><div className="text-slate-500 text-xs">القراءة الحالية</div><div>{r?.current}</div></div>
-            <div className="col-span-2"><div className="text-slate-500 text-xs">الاستهلاك</div><div className="font-semibold">{r?.consumption} م³</div></div>
-          </div>
-          <div className="mt-4 pt-4 border-t space-y-1 text-sm">
-            <div className="flex justify-between"><span className="text-slate-500">استهلاك الشهر</span><span>{fmtYER(b.subtotal)}</span></div>
-            {b.arrears > 0 && (
-              <div className="flex justify-between text-red-700"><span>متأخرات سابقة</span><span>{fmtYER(b.arrears)}</span></div>
-            )}
-            <div className="flex justify-between font-bold text-lg pt-2 border-t">
-              <span>الإجمالي</span>
-              <span style={{ color: "var(--water)" }}>{fmtYER(b.total)}</span>
-            </div>
-          </div>
-          <div className="mt-3 text-center text-xs text-slate-500">شكراً لالتزامكم بالسداد</div>
-        </div>
-        <DialogFooter>
-          <Button onClick={() => window.print()}><Printer className="w-4 h-4 ms-1" /> طباعة / PDF</Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+          <DialogFooter className="print-controls">
+            <Button onClick={() => window.print()}><Printer className="w-4 h-4 ms-1" /> طباعة / PDF</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {createPortal(
+        <div id="print-root" aria-hidden="true">
+          {invoice}
+        </div>,
+        document.body,
+      )}
+    </>
   );
 }
