@@ -192,17 +192,17 @@ export const TAIZ_DIRECTORATES = DIRECTORATES;
 
 export function billBalance(bill: Bill, payments: Payment[]): number {
   if (!bill) return 0;
+
+  // A pending payment reserves collection capacity server-side, but it does not
+  // post to the ledger and therefore must not reduce the authoritative
+  // outstanding balance shown in financial summaries.
   const approved = bill.paid !== undefined
     ? Number(bill.paid)
     : payments
         .filter((p) => p.bill_id === bill.id && p.status === "approved")
         .reduce((a, p) => a + Number(p.amount || 0), 0);
 
-  const pending = payments
-    .filter((p) => p.bill_id === bill.id && p.status === "pending")
-    .reduce((a, p) => a + Number(p.amount || 0), 0);
-
-  return Math.max(0, Number(bill.total || 0) - approved - pending);
+  return Math.max(0, Number(bill.total || 0) - approved);
 }
 
 export function isOfficialReading(r: Reading): boolean {
