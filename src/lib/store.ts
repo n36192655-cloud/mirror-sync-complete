@@ -111,7 +111,15 @@ export interface Reading {
   by?: string;
 }
 
-export type BillStatus = "unpaid" | "paid" | "partial";\n\nexport function normalizeBillStatus(raw: string | null | undefined): BillStatus {\n  if (raw === "paid") return "paid";\n  if (raw === "partial" || raw === "partially_paid") return "partial";\n  return "unpaid";\n}\n\nexport interface Bill {
+export type BillStatus = "unpaid" | "paid" | "partial";
+
+export function normalizeBillStatus(raw: string | null | undefined): BillStatus {
+  if (raw === "paid") return "paid";
+  if (raw === "partial" || raw === "partially_paid") return "partial";
+  return "unpaid";
+}
+
+export interface Bill {
   id: number;
   serial: string;
   customer_id: number;
