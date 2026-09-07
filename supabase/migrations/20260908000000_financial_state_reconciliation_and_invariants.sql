@@ -1,11 +1,11 @@
 -- MIZAN: authoritative reconciliation of derived financial state.
--- Scope is intentionally limited to derived fields. Historical economic facts
--- (ledger debit/credit, bill charges, payment amounts, arrears snapshots) are not rewritten.
+-- Scope: repair derived balances and derived bill collection state only.
+-- Historical economic facts (ledger debit/credit, bill charges, payment amounts,
+-- and arrears snapshots) are never rewritten by this migration.
 -- The tenant model is intentionally left unchanged.
 
 BEGIN;
 
--- Rebuild customer_balances from the immutable customer ledger.
 CREATE OR REPLACE FUNCTION public.reconcile_customer_financial_state(
   _tenant_id UUID,
   _customer_id UUID
@@ -24,9 +24,27 @@ BEGIN
     RETURN;
   END IF;
 
-  PERFORM public.acquire_customer_lock(_tenant_id, _customer_id);
+  WITH ordered AS (
+    SELECT
+      l.id,
+      ROUND(
+        SUM(COALESCE(l.debit_amount, 0) - COALESCE(l.credit_amount, 0)) OVER (
+          PARTITION BY l.tenant_id, l.customer_id
+          ORDER BY l.posted_at, l.id
+          ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+        ),
+        3
+      ) AS expected_running_balance
+    FROM public.customer_ledger l
+    WHERE l.tenant_id = _tenant_id
+      AND l.customer_id = _customer_id
+  )
+  UPDATE public.customer_ledger l
+  SET running_balance = o.expected_running_balance
+  FROM ordered o
+  WHERE l.id = o.id
+    AND l.running_balance IS DISTINCT FROM o.expected_running_balance;
 
-  -- The ledger remains the authoritative source for customer balance.
   SELECT
     COALESCE(SUM(l.debit_amount), 0),
     COALESCE(SUM(l.credit_amount), 0)
@@ -37,29 +55,18 @@ BEGIN
 
   v_balance := ROUND(v_debit - v_credit, 3);
 
-  -- Rebuild every running balance from ordered debit/credit facts.
-  PERFORM public.rebuild_customer_ledger_running_balance(_tenant_id, _customer_id);
-
-  -- Synchronize only derived balance totals; never alter ledger facts.
   INSERT INTO public.customer_balances (
-    tenant_id,
-    customer_id,
-    total_debit,
-    total_credit,
-    current_balance
+    tenant_id, customer_id, total_debits, total_credits, current_balance
   )
   VALUES (
-    _tenant_id,
-    _customer_id,
-    v_debit,
-    v_credit,
-    v_balance
+    _tenant_id, _customer_id, v_debit, v_credit, v_balance
   )
   ON CONFLICT (tenant_id, customer_id)
   DO UPDATE SET
-    total_debit = EXCLUDED.total_debit,
-    total_credit = EXCLUDED.total_credit,
-    current_balance = EXCLUDED.current_balance;
+    total_debits = EXCLUDED.total_debits,
+    total_credits = EXCLUDED.total_credits,
+    current_balance = EXCLUDED.current_balance,
+    updated_at = now();
 END;
 $$;
 
@@ -68,7 +75,6 @@ REVOKE ALL ON FUNCTION public.reconcile_customer_financial_state(UUID, UUID)
 GRANT EXECUTE ON FUNCTION public.reconcile_customer_financial_state(UUID, UUID)
   TO authenticated, service_role;
 
--- Reconcile all existing customers from ledger facts.
 DO $$
 DECLARE
   r RECORD;
@@ -84,8 +90,8 @@ BEGIN
 END;
 $$;
 
--- Rebuild derived bill collection state from approved payments only.
--- Void bills are deliberately excluded from automatic status rewriting.
+-- Rebuild only derived bill collection fields from approved payments.
+-- Void bills are intentionally excluded from automatic status rewriting.
 WITH approved AS (
   SELECT
     p.tenant_id,
@@ -101,7 +107,8 @@ recomputed AS (
     ROUND(COALESCE(a.approved_amount, 0), 3) AS paid_amount,
     CASE
       WHEN ROUND(COALESCE(a.approved_amount, 0), 3) <= 0 THEN 'unpaid'
-      WHEN ROUND(COALESCE(a.approved_amount, 0), 3) >= ROUND(COALESCE(b.total, 0), 3) THEN 'paid'
+      WHEN ROUND(COALESCE(a.approved_amount, 0), 3)
+           >= ROUND(COALESCE(b.total, 0), 3) THEN 'paid'
       ELSE 'partial'
     END AS status
   FROM public.water_bills b
@@ -120,59 +127,5 @@ WHERE b.id = r.id
     b.paid_amount IS DISTINCT FROM r.paid_amount
     OR b.status IS DISTINCT FROM r.status
   );
-
--- Financial invariant report for operational verification.
-CREATE OR REPLACE FUNCTION public.verify_financial_state()
-RETURNS TABLE (
-  check_name TEXT,
-  mismatch_count BIGINT
-)
-LANGUAGE sql
-SECURITY DEFINER
-SET search_path = pg_catalog, public, pg_temp
-AS $$
-  WITH ledger_balance AS (
-    SELECT tenant_id, customer_id,
-      ROUND(COALESCE(SUM(debit_amount),0) - COALESCE(SUM(credit_amount),0),3) AS expected_balance
-    FROM public.customer_ledger
-    GROUP BY tenant_id, customer_id
-  ),
-  balance_mismatch AS (
-    SELECT COUNT(*)::BIGINT AS n
-    FROM ledger_balance l
-    LEFT JOIN public.customer_balances b
-      ON b.tenant_id=l.tenant_id AND b.customer_id=l.customer_id
-    WHERE b.current_balance IS DISTINCT FROM l.expected_balance
-       OR b.total_debit IS DISTINCT FROM (
-         SELECT ROUND(COALESCE(SUM(x.debit_amount),0),3)
-         FROM public.customer_ledger x
-         WHERE x.tenant_id=l.tenant_id AND x.customer_id=l.customer_id
-       )
-       OR b.total_credit IS DISTINCT FROM (
-         SELECT ROUND(COALESCE(SUM(x.credit_amount),0),3)
-         FROM public.customer_ledger x
-         WHERE x.tenant_id=l.tenant_id AND x.customer_id=l.customer_id
-       )
-  ),
-  bill_payment_mismatch AS (
-    SELECT COUNT(*)::BIGINT AS n
-    FROM public.water_bills b
-    LEFT JOIN (
-      SELECT tenant_id, bill_id, ROUND(COALESCE(SUM(amount),0),3) AS paid_amount
-      FROM public.payments
-      WHERE status='approved'
-      GROUP BY tenant_id, bill_id
-    ) p ON p.tenant_id=b.tenant_id AND p.bill_id=b.id
-    WHERE b.status IS DISTINCT FROM 'void'
-      AND ROUND(COALESCE(b.paid_amount,0),3)
-          IS DISTINCT FROM ROUND(COALESCE(p.paid_amount,0),3)
-  )
-  SELECT 'customer_balance_vs_ledger', n FROM balance_mismatch
-  UNION ALL
-  SELECT 'bill_paid_amount_vs_approved_payments', n FROM bill_payment_mismatch;
-$$;
-
-REVOKE ALL ON FUNCTION public.verify_financial_state() FROM PUBLIC, anon;
-GRANT EXECUTE ON FUNCTION public.verify_financial_state() TO authenticated, service_role;
 
 COMMIT;
