@@ -111,11 +111,12 @@ export interface Reading {
   by?: string;
 }
 
-export type BillStatus = "unpaid" | "paid" | "partial";
+export type BillStatus = "unpaid" | "paid" | "partial" | "void";
 
 export function normalizeBillStatus(raw: string | null | undefined): BillStatus {
   if (raw === "paid") return "paid";
   if (raw === "partial" || raw === "partially_paid") return "partial";
+  if (raw === "void") return "void";
   return "unpaid";
 }
 
@@ -191,7 +192,7 @@ const DIRECTORATES = [
 export const TAIZ_DIRECTORATES = DIRECTORATES;
 
 export function billBalance(bill: Bill, payments: Payment[]): number {
-  if (!bill) return 0;
+  if (!bill || bill.status === "void") return 0;
 
   // A pending payment reserves collection capacity server-side, but it does not
   // post to the ledger and therefore must not reduce the authoritative
@@ -272,9 +273,17 @@ export interface FinancialSummary {
   unpaidBills: number;
 }
 
+export function isFinancialBill(bill: Bill): boolean {
+  return bill.status !== "void";
+}
+
 export function computeFinancials(bills: Bill[], payments: Payment[]): FinancialSummary {
-  const totalBilled = bills.reduce((a, b) => a + (Number(b.total) || 0), 0);
-  const totalCollected = bills.reduce((a, b) => {
+  // A void bill is not an economic obligation and must be excluded from every
+  // collection KPI. Keep the filter at the boundary so all aggregates use the
+  // same authoritative population.
+  const financialBills = bills.filter(isFinancialBill);
+  const totalBilled = financialBills.reduce((a, b) => a + (Number(b.total) || 0), 0);
+  const totalCollected = financialBills.reduce((a, b) => {
     if (b.paid !== undefined) return a + (Number(b.paid) || 0);
     return (
       a +
@@ -283,14 +292,14 @@ export function computeFinancials(bills: Bill[], payments: Payment[]): Financial
         .reduce((s, p) => s + (Number(p.amount) || 0), 0)
     );
   }, 0);
-  const unpaid = bills.filter((b) => b.status !== "paid");
-  const outstanding = unpaid.reduce((a, b) => a + billBalance(b, payments), 0);
+  const unpaid = financialBills.filter((b) => b.status !== "paid");
+  const outstanding = financialBills.reduce((a, b) => a + billBalance(b, payments), 0);
   return {
     totalBilled,
     totalCollected,
     outstanding,
     collectionRate: totalBilled > 0 ? (totalCollected / totalBilled) * 100 : 0,
-    paidBills: bills.length - unpaid.length,
+    paidBills: financialBills.filter((b) => b.status === "paid").length,
     unpaidBills: unpaid.length,
   };
 }
@@ -613,7 +622,7 @@ export const useStore = create<State>()(
         set((s) => ({ productionLogs: [{ ...p, id }, ...s.productionLogs] }));
       },
       deleteProductionLog: (id) => set((s) => ({ productionLogs: s.productionLogs.filter((p) => p.id !== id) })),
-      computeArrears: (customerId, excludeBillId) => get().bills.filter((b) => b.customer_id === customerId && b.id !== excludeBillId && b.status !== "paid").reduce((sum, b) => sum + billBalance(b, get().payments), 0),
+      computeArrears: (customerId, excludeBillId) => get().bills.filter((b) => b.customer_id === customerId && b.id !== excludeBillId && isFinancialBill(b) && b.status !== "paid").reduce((sum, b) => sum + billBalance(b, get().payments), 0),
       reset: () => set(initial()),
     })),
 );
