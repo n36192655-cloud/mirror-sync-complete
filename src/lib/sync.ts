@@ -3,7 +3,8 @@ import { useStore } from "./store";
 import { supabase } from "./supabase";
 import { toast } from "sonner";
 import { STORE_BLOBS, STORE_QUEUE, idbDelete, idbGet, idbGetAll, idbPut, idbPutQueueWithPhoto, requestPersistentStorage } from "./offline-db";
-import { verifyMeterImage, saveManualFallbackMeterReading, saveVerifiedMeterReading } from "./meter-vision.functions";
+import { verifyMeterImage, saveVerifiedMeterReading } from "./meter-vision.functions";
+import { saveManualMeterReading } from "./meter-manual.functions";
 import { fileToDataUrl } from "./meter-ocr";
 
 const MAX_PHOTO_BYTES = 25 * 1024 * 1024;
@@ -14,7 +15,7 @@ export interface PendingReading {
   clientId: string; customerId: string; meterId: string; meterNumber: string; current: number;
   readingDate?: string; createdAt: string; by?: string; latitude?: number; longitude?: number;
   accuracy?: number; tenantId?: string; hasPhoto?: boolean; photoType?: string; photoPath?: string;
-  readingSource?: "OCR" | "MANUAL_FALLBACK"; attemptCount?: number; failureReason?: string;
+  readingSource?: "OCR" | "MANUAL" | "MANUAL_FALLBACK"; attemptCount?: number; failureReason?: string;
   status: QueueStatus; attempts: number; lastError?: string; lastAttemptAt?: string; syncedAt?: string;
 }
 
@@ -50,12 +51,12 @@ function validatePhoto(blob: Blob) {
 function localDateFromCreatedAt(createdAt: string) { return /^\d{4}-\d{2}-\d{2}T/.test(createdAt) ? createdAt.slice(0, 10) : ""; }
 function numericEqual(a: number, b: number) { return Number.isFinite(a) && Number.isFinite(b) && Object.is(a, b); }
 
-export async function addPending(p: Omit<PendingReading,"clientId"|"createdAt"|"status"|"attempts"> & {clientId?: string}, photo: Blob) {
+export async function addPending(p: Omit<PendingReading,"clientId"|"createdAt"|"status"|"attempts"> & {clientId?: string}, photo?: Blob | null) {
   await ensureMigrated(); void requestPersistentStorage();
   const clientId = p.clientId ?? crypto.randomUUID();
-  validatePhoto(photo);
-  const item: PendingReading = { ...p, clientId, createdAt: new Date().toISOString(), status: "pending", attempts: 0, hasPhoto: true, photoType: photo.type };
-  await idbPutQueueWithPhoto(item, photo);
+  if (photo) validatePhoto(photo);
+  const item: PendingReading = { ...p, clientId, createdAt: new Date().toISOString(), status: "pending", attempts: 0, hasPhoto: !!photo, photoType: photo?.type };
+  if (photo) await idbPutQueueWithPhoto(item, photo); else await idbPut(STORE_QUEUE, item);
   notify(); return item;
 }
 export async function removePending(clientId: string) { await idbDelete(STORE_QUEUE, clientId); await idbDelete(STORE_BLOBS, clientId); notify(); }
@@ -76,15 +77,27 @@ export async function syncPending(force=false): Promise<{synced:number;failed:nu
     for(const p of list){
       await setStatus(p,{status:"syncing"}); let photoPath=p.photoPath??null;
       try{
-        if(!p.hasPhoto)throw new Error("هذه القراءة المحلية لا تحتوي على صورة أصلية؛ لا يمكن مزامنتها بأمان.");
-        const blob=await getPendingPhoto(p.clientId); if(!blob)throw new Error("صورة القراءة غير موجودة في التخزين المحلي؛ لا يمكن مزامنة القراءة بأمان.");
-        validatePhoto(blob);
         const readingDate=p.readingDate??localDateFromCreatedAt(p.createdAt); if(!readingDate)throw new Error("تاريخ القراءة المحلي غير صالح؛ لا يمكن مزامنة القراءة بأمان.");
-        const originalImageDataUrl=await new Promise<string>((resolve,reject)=>{const reader=new FileReader();reader.onload=()=>resolve(String(reader.result));reader.onerror=()=>reject(reader.error??new Error("تعذر قراءة الصورة الأصلية"));reader.readAsDataURL(blob);});
+        let saved;
         const source=p.readingSource??"OCR";
-        const saved=source==="MANUAL_FALLBACK"
-          ? await saveManualFallbackMeterReading({data:{originalImageDataUrl,meterId:p.meterId,customerId:p.customerId,readingDate,clientUuid:p.clientId,currentReading:p.current,attemptCount:3,failureReason:p.failureReason??"OCR_FAILED_THREE_ATTEMPTS",latitude:p.latitude??null,longitude:p.longitude??null,gpsVerified:p.latitude!=null}})
-          : await (async()=>{const imageDataUrl=await fileToDataUrl(blob);const verified=await verifyMeterImage({data:{imageDataUrl,originalImageDataUrl,meterId:p.meterId,customerId:p.customerId,readingDate,clientUuid:p.clientId,attemptCount:Math.max(1,Math.min(3,p.attemptCount??1))}});if(verified.serialMatch!=="match"||verified.meterNumber==null)throw new Error("رفضت المزامنة: هوية العداد في الصورة لا تطابق العداد المرتبط.");if(verified.readingValue==null||verified.ambiguous)throw new Error("رفضت المزامنة: تعذر استخراج قراءة واضحة من الصورة الأصلية.");if(!numericEqual(verified.readingValue,p.current))throw new Error(`رفضت المزامنة: القراءة المحلية (${p.current}) لا تطابق القراءة التي تحقق منها الخادم (${verified.readingValue}).`);if(!verified.verificationToken)throw new Error("رفضت المزامنة: لم يصدر إثبات تحقق صالح.");return saveVerifiedMeterReading({data:{originalImageDataUrl,verificationToken:verified.verificationToken,latitude:p.latitude??null,longitude:p.longitude??null,gpsVerified:p.latitude!=null}});})();
+        if(source==="MANUAL"||source==="MANUAL_FALLBACK") {
+          const blob=p.hasPhoto ? await getPendingPhoto(p.clientId) : null;
+          if(p.hasPhoto && !blob) throw new Error("صورة القراءة غير موجودة في التخزين المحلي؛ لا يمكن مزامنة القراءة بأمان.");
+          if(blob) validatePhoto(blob);
+          const originalImageDataUrl=blob ? await new Promise<string>((resolve,reject)=>{const reader=new FileReader();reader.onload=()=>resolve(String(reader.result));reader.onerror=()=>reject(reader.error??new Error("تعذر قراءة الصورة الأصلية"));reader.readAsDataURL(blob);}) : null;
+          saved=await saveManualMeterReading({data:{originalImageDataUrl,meterId:p.meterId,customerId:p.customerId,readingDate,clientUuid:p.clientId,currentReading:p.current,attemptCount:p.attemptCount??0,failureReason:p.failureReason??null,latitude:p.latitude??null,longitude:p.longitude??null,gpsVerified:p.latitude!=null}});
+        } else {
+          if(!p.hasPhoto)throw new Error("هذه القراءة المحلية لا تحتوي على صورة أصلية؛ قراءة OCR لا يمكن مزامنتها بأمان.");
+          const blob=await getPendingPhoto(p.clientId); if(!blob)throw new Error("صورة القراءة غير موجودة في التخزين المحلي؛ لا يمكن مزامنة القراءة بأمان.");
+          validatePhoto(blob);
+          const originalImageDataUrl=await new Promise<string>((resolve,reject)=>{const reader=new FileReader();reader.onload=()=>resolve(String(reader.result));reader.onerror=()=>reject(reader.error??new Error("تعذر قراءة الصورة الأصلية"));reader.readAsDataURL(blob);});
+          const imageDataUrl=await fileToDataUrl(blob);const verified=await verifyMeterImage({data:{imageDataUrl,originalImageDataUrl,meterId:p.meterId,customerId:p.customerId,readingDate,clientUuid:p.clientId,attemptCount:Math.max(1,p.attemptCount??1)}});
+          if(verified.serialMatch!=="match"||verified.meterNumber==null)throw new Error("رفضت المزامنة: هوية العداد في الصورة لا تطابق العداد المرتبط.");
+          if(verified.readingValue==null||verified.ambiguous)throw new Error("رفضت المزامنة: تعذر استخراج قراءة واضحة من الصورة الأصلية.");
+          if(!numericEqual(verified.readingValue,p.current))throw new Error(`رفضت المزامنة: القراءة المحلية (${p.current}) لا تطابق القراءة التي تحقق منها الخادم (${verified.readingValue}).`);
+          if(!verified.verificationToken)throw new Error("رفضت المزامنة: لم يصدر إثبات تحقق صالح.");
+          saved=await saveVerifiedMeterReading({data:{originalImageDataUrl,verificationToken:verified.verificationToken,latitude:p.latitude??null,longitude:p.longitude??null,gpsVerified:p.latitude!=null}});
+        }
         if(!saved.saved||!saved.readingId)throw new Error("لم يؤكد الخادم حفظ القراءة.");
         photoPath=saved.evidencePath;
         await setStatus(p,{status:"synced",photoPath:photoPath??undefined,syncedAt:new Date().toISOString(),lastError:undefined});
