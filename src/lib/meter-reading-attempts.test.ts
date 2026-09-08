@@ -8,7 +8,11 @@ describe("three-attempt manual fallback policy", () => {
   });
 
   test("exposes manual fallback only after exactly three documented failures", () => {
-    expect(manualFallbackAvailable({ attemptCount: 3, failureReasons: ["OCR_IMAGE_FAILURE", "TIMEOUT", "IDENTITY_FAILED"], updatedAt: "" })).toBe(true);
+    expect(manualFallbackAvailable({ attemptCount: 3, failureReasons: ["OCR_IMAGE_FAILURE", "TIMEOUT", "EXCEPTION"], updatedAt: "" })).toBe(true);
+  });
+
+  test("does not unlock manual fallback for meter identity failures", () => {
+    expect(manualFallbackAvailable({ attemptCount: 3, failureReasons: ["OCR_IMAGE_FAILURE", "TIMEOUT", "IDENTITY_FAILED"], updatedAt: "" })).toBe(false);
   });
 
   test("three attempts without three failure records is not enough", () => {
