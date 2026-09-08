@@ -34,19 +34,7 @@ function validate(input: unknown): ManualInput {
   if (!Number.isFinite(currentReading) || currentReading < 0) throw new Error("القراءة الحالية غير صالحة");
   if (attemptCount < 0) throw new Error("عدد المحاولات غير صالح");
   if (originalImageDataUrl && (!DATA_URL_RE.test(originalImageDataUrl) || originalImageDataUrl.length > 34_000_000)) throw new Error("الصورة الأصلية غير صالحة");
-  return {
-    meterId,
-    customerId,
-    readingDate,
-    clientUuid,
-    currentReading,
-    attemptCount,
-    failureReason: failureReason || undefined,
-    originalImageDataUrl,
-    latitude: typeof obj.latitude === "number" && Number.isFinite(obj.latitude) ? obj.latitude : null,
-    longitude: typeof obj.longitude === "number" && Number.isFinite(obj.longitude) ? obj.longitude : null,
-    gpsVerified: obj.gpsVerified === true,
-  };
+  return { meterId, customerId, readingDate, clientUuid, currentReading, attemptCount, failureReason: failureReason || undefined, originalImageDataUrl, latitude: typeof obj.latitude === "number" && Number.isFinite(obj.latitude) ? obj.latitude : null, longitude: typeof obj.longitude === "number" && Number.isFinite(obj.longitude) ? obj.longitude : null, gpsVerified: obj.gpsVerified === true };
 }
 
 function decodeImageDataUrl(dataUrl: string): { bytes: Uint8Array; mime: "image/jpeg" | "image/png" | "image/webp" } {
@@ -62,6 +50,8 @@ function decodeImageDataUrl(dataUrl: string): { bytes: Uint8Array; mime: "image/
   if ((mime === "image/jpeg" && !jpeg) || (mime === "image/png" && !png) || (mime === "image/webp" && !webp)) throw new Error("محتوى الصورة لا يطابق نوع الملف");
   return { bytes, mime };
 }
+
+type ProvenanceRpcClient = { rpc: (name: string, args: Record<string, unknown>) => Promise<{ data: unknown; error: { code?: string; message: string } | null }> };
 
 export const saveManualMeterReading = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
@@ -92,9 +82,8 @@ export const saveManualMeterReading = createServerFn({ method: "POST" })
       photoUrl = uploadedPath;
     }
 
-    const attemptCount = Math.max(0, data.attemptCount ?? 0);
-    const failureReason = data.failureReason ?? null;
-    const { data: readingId, error } = await client.rpc("insert_meter_reading_with_provenance", {
+    const rpcClient = client as unknown as ProvenanceRpcClient;
+    const { data: readingId, error } = await rpcClient.rpc("insert_meter_reading_with_provenance", {
       p_tenant_id: tenantId,
       p_customer_id: data.customerId,
       p_meter_id: data.meterId,
@@ -106,8 +95,8 @@ export const saveManualMeterReading = createServerFn({ method: "POST" })
       p_lng: data.longitude ?? null,
       p_gps_verified: data.gpsVerified === true,
       p_reading_source: "MANUAL",
-      p_attempt_count: attemptCount,
-      p_failure_reason: failureReason,
+      p_attempt_count: Math.max(0, data.attemptCount ?? 0),
+      p_failure_reason: data.failureReason ?? null,
     });
     if (error) {
       if (uploadedPath && error.code !== "23505") await client.storage.from("meter-readings").remove([uploadedPath]).catch(() => undefined);
