@@ -119,6 +119,7 @@ export const MeterCamera: React.FC<MeterCameraProps> = ({
   const nativeInputRef = useRef<HTMLInputElement | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const previewUrlRef = useRef<string | null>(initialPreview ?? null);
+  const autoStartAttemptedRef = useRef(false);
   const [isCameraActive, setIsCameraActive] = useState(false);
   const [isStarting, setIsStarting] = useState(false);
   const [isStreamReady, setIsStreamReady] = useState(false);
@@ -282,6 +283,12 @@ export const MeterCamera: React.FC<MeterCameraProps> = ({
     }
   }, [attachStream, disabled, previewUrl, stopCamera, waitForFirstFrame]);
 
+  useEffect(() => {
+    if (autoStartAttemptedRef.current || disabled || previewUrl) return;
+    autoStartAttemptedRef.current = true;
+    void startCamera();
+  }, [disabled, previewUrl, startCamera]);
+
   const capturePhoto = useCallback(async () => {
     if (disabled || previewUrl || isCapturing) return;
     const video = videoRef.current;
@@ -332,6 +339,7 @@ export const MeterCamera: React.FC<MeterCameraProps> = ({
     cleanupPreview();
     setPreviewUrl(null);
     setError(null);
+    autoStartAttemptedRef.current = false;
     if (nativeInputRef.current) nativeInputRef.current.value = "";
     onClear?.();
   }, [cleanupPreview, onClear]);
