@@ -130,7 +130,7 @@ function parseVisionResponse(response: unknown, expectedMeterNumber: string, pre
     ? Math.max(0, Math.min(100, Math.round(rawConfidence <= 1 ? rawConfidence * 100 : rawConfidence))) : 0;
   const meterNumber = typeof parsed.meterNumber === "string" && parsed.meterNumber.trim() ? parsed.meterNumber.trim() : null;
   const otherNumbers = Array.isArray(parsed.otherNumbers) ? parsed.otherNumbers.map(String).filter(Boolean).slice(0, 12) : [];
-  const serialMatch = !meterNumber ? "unknown" : exactSerialMatch(expectedMeterNumber, meterNumber) ? "match" : "mismatch";
+  const serialMatch: "match" | "mismatch" | "unknown" = !meterNumber ? "unknown" : exactSerialMatch(expectedMeterNumber, meterNumber) ? "match" : "mismatch";
   const belowPrevious = readingValue != null && readingValue < previousReading;
   const ambiguous = parsed.ambiguous === true || readingValue == null || belowPrevious || confidence < 85 || serialMatch === "mismatch";
   return { readingValue: ambiguous ? null : readingValue, confidence, meterNumber, otherNumbers, ambiguous, serialMatch };
