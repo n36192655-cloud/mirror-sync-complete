@@ -18,6 +18,7 @@
     "noFallthroughCasesInSwitch": true,
     "noUncheckedSideEffectImports": true,
     "paths": {
+      "@/lib/meter-vision.functions": ["./src/lib/meter-vision.functions.hardened.ts"],
       "@/*": ["./src/*"]
     }
   }
