@@ -3,7 +3,7 @@ import { useStore } from "./store";
 import { supabase } from "./supabase";
 import { toast } from "sonner";
 import { STORE_BLOBS, STORE_QUEUE, idbDelete, idbGet, idbGetAll, idbPut, idbPutQueueWithPhoto, requestPersistentStorage } from "./offline-db";
-import { verifyMeterImage, saveVerifiedMeterReading } from "./meter-vision.functions";
+import { verifyMeterImage, saveManualFallbackMeterReading, saveVerifiedMeterReading } from "./meter-vision.functions";
 import { fileToDataUrl } from "./meter-ocr";
 
 const MAX_PHOTO_BYTES = 25 * 1024 * 1024;
@@ -14,6 +14,7 @@ export interface PendingReading {
   clientId: string; customerId: string; meterId: string; meterNumber: string; current: number;
   readingDate?: string; createdAt: string; by?: string; latitude?: number; longitude?: number;
   accuracy?: number; tenantId?: string; hasPhoto?: boolean; photoType?: string; photoPath?: string;
+  readingSource?: "OCR" | "MANUAL_FALLBACK"; attemptCount?: number; failureReason?: string;
   status: QueueStatus; attempts: number; lastError?: string; lastAttemptAt?: string; syncedAt?: string;
 }
 
@@ -80,13 +81,10 @@ export async function syncPending(force=false): Promise<{synced:number;failed:nu
         validatePhoto(blob);
         const readingDate=p.readingDate??localDateFromCreatedAt(p.createdAt); if(!readingDate)throw new Error("تاريخ القراءة المحلي غير صالح؛ لا يمكن مزامنة القراءة بأمان.");
         const originalImageDataUrl=await new Promise<string>((resolve,reject)=>{const reader=new FileReader();reader.onload=()=>resolve(String(reader.result));reader.onerror=()=>reject(reader.error??new Error("تعذر قراءة الصورة الأصلية"));reader.readAsDataURL(blob);});
-        const imageDataUrl=await fileToDataUrl(blob);
-        const verified=await verifyMeterImage({data:{imageDataUrl,originalImageDataUrl,meterId:p.meterId,customerId:p.customerId,readingDate,clientUuid:p.clientId}});
-        if(verified.serialMatch!=="match"||verified.meterNumber==null)throw new Error("رفضت المزامنة: هوية العداد في الصورة لا تطابق العداد المرتبط.");
-        if(verified.readingValue==null||verified.ambiguous)throw new Error("رفضت المزامنة: تعذر استخراج قراءة واضحة من الصورة الأصلية.");
-        if(!numericEqual(verified.readingValue,p.current))throw new Error(`رفضت المزامنة: القراءة المحلية (${p.current}) لا تطابق القراءة التي تحقق منها الخادم (${verified.readingValue}).`);
-        if(!verified.verificationToken)throw new Error("رفضت المزامنة: لم يصدر إثبات تحقق صالح.");
-        const saved=await saveVerifiedMeterReading({data:{originalImageDataUrl,verificationToken:verified.verificationToken,latitude:p.latitude??null,longitude:p.longitude??null,gpsVerified:p.latitude!=null}});
+        const source=p.readingSource??"OCR";
+        const saved=source==="MANUAL_FALLBACK"
+          ? await saveManualFallbackMeterReading({data:{originalImageDataUrl,meterId:p.meterId,customerId:p.customerId,readingDate,clientUuid:p.clientId,currentReading:p.current,attemptCount:3,failureReason:p.failureReason??"OCR_FAILED_THREE_ATTEMPTS",latitude:p.latitude??null,longitude:p.longitude??null,gpsVerified:p.latitude!=null}})
+          : await (async()=>{const imageDataUrl=await fileToDataUrl(blob);const verified=await verifyMeterImage({data:{imageDataUrl,originalImageDataUrl,meterId:p.meterId,customerId:p.customerId,readingDate,clientUuid:p.clientId,attemptCount:Math.max(1,Math.min(3,p.attemptCount??1))}});if(verified.serialMatch!=="match"||verified.meterNumber==null)throw new Error("رفضت المزامنة: هوية العداد في الصورة لا تطابق العداد المرتبط.");if(verified.readingValue==null||verified.ambiguous)throw new Error("رفضت المزامنة: تعذر استخراج قراءة واضحة من الصورة الأصلية.");if(!numericEqual(verified.readingValue,p.current))throw new Error(`رفضت المزامنة: القراءة المحلية (${p.current}) لا تطابق القراءة التي تحقق منها الخادم (${verified.readingValue}).`);if(!verified.verificationToken)throw new Error("رفضت المزامنة: لم يصدر إثبات تحقق صالح.");return saveVerifiedMeterReading({data:{originalImageDataUrl,verificationToken:verified.verificationToken,latitude:p.latitude??null,longitude:p.longitude??null,gpsVerified:p.latitude!=null}});})();
         if(!saved.saved||!saved.readingId)throw new Error("لم يؤكد الخادم حفظ القراءة.");
         photoPath=saved.evidencePath;
         await setStatus(p,{status:"synced",photoPath:photoPath??undefined,syncedAt:new Date().toISOString(),lastError:undefined});
