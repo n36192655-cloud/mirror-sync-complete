@@ -51,7 +51,28 @@ function decodeImageDataUrl(dataUrl: string): { bytes: Uint8Array; mime: "image/
   return { bytes, mime };
 }
 
-type ProvenanceRpcClient = { rpc: (name: string, args: Record<string, unknown>) => Promise<{ data: unknown; error: { code?: string; message: string } | null }> };
+type ManualProvenanceArgs = {
+  p_tenant_id: string;
+  p_customer_id: string;
+  p_meter_id: string;
+  p_current_reading: number;
+  p_reading_date: string;
+  p_client_uuid: string;
+  p_photo_url: string | null;
+  p_lat: number | null;
+  p_lng: number | null;
+  p_gps_verified: boolean;
+  p_reading_source: "MANUAL";
+  p_attempt_count: number;
+  p_failure_reason: string | null;
+};
+
+type ManualProvenanceRpc = {
+  rpc: (name: "insert_meter_reading_with_provenance", args: ManualProvenanceArgs) => Promise<{
+    data: string | null;
+    error: { code?: string; message: string } | null;
+  }>;
+};
 
 export const saveManualMeterReading = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
@@ -82,7 +103,7 @@ export const saveManualMeterReading = createServerFn({ method: "POST" })
       photoUrl = uploadedPath;
     }
 
-    const rpcClient = client as unknown as ProvenanceRpcClient;
+    const rpcClient = client as unknown as ManualProvenanceRpc;
     const { data: readingId, error } = await rpcClient.rpc("insert_meter_reading_with_provenance", {
       p_tenant_id: tenantId,
       p_customer_id: data.customerId,
