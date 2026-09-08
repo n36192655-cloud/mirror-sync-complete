@@ -1,5 +1,5 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
-import type { Database } from "@/integrations/supabase/types";
+import type { Database } from "@/lib/supabase";
 type DB = SupabaseClient<Database>;
 export interface ExtraToolResult { ok: boolean; data: unknown; table?: { title: string; columns: string[]; rows: Array<Array<string | number | null>> } }
 const isUuid = (v: unknown): v is string => typeof v === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(v);

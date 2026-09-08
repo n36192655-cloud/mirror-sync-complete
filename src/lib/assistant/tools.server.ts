@@ -2,7 +2,7 @@
 // كل الاستعلامات تتم على الخادم عبر عميل Supabase المصادَق (RLS مفعّل)،
 // ولا يُسمح بـ SQL حر — فقط أدوات مقيّدة ومحددة المعاملات.
 import type { SupabaseClient } from "@supabase/supabase-js";
-import type { Database } from "@/integrations/supabase/types";
+import type { Database } from "@/lib/supabase";
 
 type DB = SupabaseClient<Database>;
 

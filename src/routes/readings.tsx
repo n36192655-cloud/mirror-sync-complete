@@ -19,7 +19,7 @@ import { saveManualMeterReading } from "@/lib/meter-manual.functions";
 import { classifyVerificationError, verificationFailureMessage, type VerificationTerminalState } from "@/lib/meter-reading-lifecycle";
 import { loadMeterReadingAttempts, registerMeterReadingAttempt, registerMeterReadingFailure, resetMeterReadingAttempts, type MeterReadingAttemptState } from "@/lib/meter-reading-attempts";
 import type { MeterReadingProfile } from "@/lib/meter-reading-profile";
-import type { Database } from "@/integrations/supabase/types";
+import type { Database } from "@/lib/supabase";
 
 type CustomerRow = Database["public"]["Tables"]["customers"]["Row"];
 type ReadingRow = Database["public"]["Tables"]["water_readings"]["Row"];
