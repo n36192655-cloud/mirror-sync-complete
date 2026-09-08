@@ -116,6 +116,7 @@ export const MeterCamera: React.FC<MeterCameraProps> = ({
   disabled = false,
 }) => {
   const videoRef = useRef<HTMLVideoElement | null>(null);
+  const nativeInputRef = useRef<HTMLInputElement | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const previewUrlRef = useRef<string | null>(initialPreview ?? null);
   const [isCameraActive, setIsCameraActive] = useState(false);
@@ -308,10 +309,30 @@ export const MeterCamera: React.FC<MeterCameraProps> = ({
     }
   }, [applyPreview, cleanupPreview, disabled, isCapturing, isStreamReady, onCapture, previewUrl, stopCamera]);
 
+  const handleSystemCameraCapture = useCallback((event: React.ChangeEvent<HTMLInputElement>) => {
+    const selectedFile = event.target.files?.[0];
+    event.target.value = "";
+    if (!selectedFile || disabled || previewUrl) return;
+    if (!selectedFile.type.startsWith("image/")) {
+      setError("تعذر استقبال صورة من كاميرا النظام.");
+      return;
+    }
+    const originalFile = new File([selectedFile], selectedFile.name || `meter_${Date.now()}`, {
+      type: selectedFile.type,
+      lastModified: selectedFile.lastModified || Date.now(),
+    });
+    const newPreview = URL.createObjectURL(originalFile);
+    cleanupPreview();
+    applyPreview(newPreview);
+    stopCamera();
+    onCapture(originalFile, newPreview, { captureMs: null });
+  }, [applyPreview, cleanupPreview, disabled, onCapture, previewUrl, stopCamera]);
+
   const handleReset = useCallback(() => {
     cleanupPreview();
     setPreviewUrl(null);
     setError(null);
+    if (nativeInputRef.current) nativeInputRef.current.value = "";
     onClear?.();
   }, [cleanupPreview, onClear]);
 
@@ -335,8 +356,27 @@ export const MeterCamera: React.FC<MeterCameraProps> = ({
             <Camera className="w-4 h-4" />
             فتح الكاميرا للالتقاط
           </Button>
+          <Button
+            type="button"
+            variant="outline"
+            disabled={disabled || isStarting}
+            onClick={() => nativeInputRef.current?.click()}
+            className="gap-2"
+          >
+            <Camera className="w-4 h-4" />
+            كاميرا النظام
+          </Button>
         </div>
       )}
+
+      <input
+        ref={nativeInputRef}
+        type="file"
+        accept="image/*"
+        capture="environment"
+        className="hidden"
+        onChange={handleSystemCameraCapture}
+      />
 
       {isCameraActive && (
         <div className="relative w-full max-w-2xl overflow-hidden rounded-lg bg-black aspect-video flex items-center justify-center">
