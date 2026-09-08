@@ -50,6 +50,9 @@ export function resetMeterReadingAttempts(scope: string) {
   window.sessionStorage.removeItem(key(scope));
 }
 
+const MANUAL_FALLBACK_ELIGIBLE_FAILURES = new Set<MeterReadingAttemptFailure>(["OCR_IMAGE_FAILURE", "TIMEOUT", "EXCEPTION"]);
+
 export function manualFallbackAvailable(state: MeterReadingAttemptState) {
-  return state.attemptCount >= 3 && state.failureReasons.length >= 3;
+  const reasons = state.failureReasons.slice(-3);
+  return state.attemptCount >= 3 && reasons.length === 3 && reasons.every(reason => MANUAL_FALLBACK_ELIGIBLE_FAILURES.has(reason));
 }
