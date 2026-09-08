@@ -14,8 +14,10 @@ export function loadMeterReadingAttempts(scope: string): MeterReadingAttemptStat
     const raw = window.sessionStorage.getItem(key(scope));
     if (!raw) return { attemptCount: 0, failureReasons: [], updatedAt: new Date(0).toISOString() };
     const parsed = JSON.parse(raw) as Partial<MeterReadingAttemptState>;
-    const attemptCount = Number.isInteger(parsed.attemptCount) ? Math.max(0, Math.min(3, parsed.attemptCount!)) : 0;
-    const failureReasons = Array.isArray(parsed.failureReasons) ? parsed.failureReasons.filter((x): x is MeterReadingAttemptFailure => typeof x === "string").slice(0, 3) : [];
+    const attemptCount = Number.isInteger(parsed.attemptCount) ? Math.max(0, parsed.attemptCount!) : 0;
+    const failureReasons = Array.isArray(parsed.failureReasons)
+      ? parsed.failureReasons.filter((x): x is MeterReadingAttemptFailure => typeof x === "string").slice(-20)
+      : [];
     return { attemptCount, failureReasons, updatedAt: typeof parsed.updatedAt === "string" ? parsed.updatedAt : new Date().toISOString() };
   } catch {
     return { attemptCount: 0, failureReasons: [], updatedAt: new Date().toISOString() };
@@ -29,7 +31,7 @@ function save(scope: string, state: MeterReadingAttemptState) {
 
 export function registerMeterReadingAttempt(scope: string): MeterReadingAttemptState {
   const previous = loadMeterReadingAttempts(scope);
-  const next = { ...previous, attemptCount: Math.min(3, previous.attemptCount + 1), updatedAt: new Date().toISOString() };
+  const next = { ...previous, attemptCount: previous.attemptCount + 1, updatedAt: new Date().toISOString() };
   save(scope, next);
   return next;
 }
@@ -38,7 +40,7 @@ export function registerMeterReadingFailure(scope: string, reason: MeterReadingA
   const previous = loadMeterReadingAttempts(scope);
   const next = {
     attemptCount: previous.attemptCount,
-    failureReasons: [...previous.failureReasons, reason].slice(-3),
+    failureReasons: [...previous.failureReasons, reason].slice(-20),
     updatedAt: new Date().toISOString(),
   };
   save(scope, next);
@@ -50,9 +52,11 @@ export function resetMeterReadingAttempts(scope: string) {
   window.sessionStorage.removeItem(key(scope));
 }
 
-const MANUAL_FALLBACK_ELIGIBLE_FAILURES = new Set<MeterReadingAttemptFailure>(["OCR_IMAGE_FAILURE", "TIMEOUT", "EXCEPTION"]);
-
-export function manualFallbackAvailable(state: MeterReadingAttemptState) {
-  const reasons = state.failureReasons.slice(-3);
-  return state.attemptCount >= 3 && reasons.length === 3 && reasons.every(reason => MANUAL_FALLBACK_ELIGIBLE_FAILURES.has(reason));
+/**
+ * Retained for backward compatibility with callers that may still import it.
+ * Manual entry is not a business fallback gate; it is always permitted after
+ * the normal validation path. Attempt history is diagnostic/analytic only.
+ */
+export function manualFallbackAvailable(_state: MeterReadingAttemptState) {
+  return true;
 }
