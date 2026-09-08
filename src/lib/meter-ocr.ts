@@ -4,6 +4,7 @@
  */
 import { assertMeterImageQuality } from "./meter-image-quality";
 import { createMeterReadingDeadline, MeterReadingTimeoutError, withMeterReadingDeadline } from "./meter-reading-deadline";
+import { normalizeMeterReadingCandidate, type MeterReadingProfile } from "./meter-reading-profile";
 
 export const LOCAL_TESSERACT_OPTIONS = {
   workerPath: "/tesseract/worker.min.js",
@@ -65,9 +66,15 @@ export function serialFoundInOcrText(rawText: string, knownSerial: string): bool
 const DATE_RE = /^(19|20)\d{2}$|^\d{1,2}[./-]\d{1,2}([./-]\d{2,4})?$/;
 const UNIT_RE = /^(m3|m³|cbm|kwh|lt|l|kg|bar|°c|mm|cm)$/i;
 function classify(text: string, known: string, isReading: boolean): OcrToken["kind"] { const n = normalizeSerial(text); if (known && n === known) return "meter-number"; if (UNIT_RE.test(text.trim())) return "unit"; if (DATE_RE.test(normalizeDigits(text.trim()))) return "date"; if (isReading) return "reading"; return "other"; }
-function readingShape(text: string) { const t = normalizeDigits(text).replace(/[^\d.,]/g, "").replace(/,/g, "."); if (!/^\d{1,12}(\.\d{1,3})?$/.test(t)) return { ok: false, value: null as number | null }; const digits = t.replace(/\D/g, ""); if (digits.length < 3 || digits.length > 12) return { ok: false, value: null }; const value = Number(t); return Number.isFinite(value) ? { ok: true, value } : { ok: false, value: null as number | null }; }
+function readingShape(text: string, profile: MeterReadingProfile) {
+  const candidate = normalizeMeterReadingCandidate(text, profile);
+  if (!candidate) return { ok: false, value: null as number | null };
+  const digits = candidate.normalized.replace(/\D/g, "");
+  if (digits.length < 3 || digits.length > 12) return { ok: false, value: null as number | null };
+  return { ok: true, value: candidate.value };
+}
 
-export interface RecognizeOptions { knownMeterNumber?: string; previousReading?: number | null; excludeNumbers?: (string | number | null | undefined)[]; }
+export interface RecognizeOptions { knownMeterNumber?: string; previousReading?: number | null; excludeNumbers?: (string | number | null | undefined)[]; profile?: MeterReadingProfile; }
 interface FlatWord { text: string; confidence: number; height: number; }
 function flattenWords(data: unknown): FlatWord[] {
   const out: FlatWord[] = [];
@@ -86,11 +93,7 @@ async function preprocess(image: Blob | File | string): Promise<HTMLCanvasElemen
     const maxW = 1600; const scale = img.naturalWidth > maxW ? maxW / img.naturalWidth : 1; const w = Math.max(1, Math.round(img.naturalWidth * scale)); const h = Math.max(1, Math.round(img.naturalHeight * scale));
     const canvas = document.createElement("canvas"); canvas.width = w; canvas.height = h; const ctx = canvas.getContext("2d"); if (!ctx) return image; ctx.drawImage(img, 0, 0, w, h);
     if (typeof image !== "string") URL.revokeObjectURL(src);
-    const px = ctx.getImageData(0, 0, w, h); const a = px.data; let sum = 0;
-    for (let i = 0; i < a.length; i += 4) { const g = 0.299 * a[i] + 0.587 * a[i + 1] + 0.114 * a[i + 2]; a[i] = a[i + 1] = a[i + 2] = g; sum += g; }
-    const mean = sum / (a.length / 4); const k = 1.6;
-    for (let i = 0; i < a.length; i += 4) { const v = Math.max(0, Math.min(255, (a[i] - mean) * k + mean)); a[i] = a[i + 1] = a[i + 2] = v; }
-    ctx.putImageData(px, 0, 0); return canvas;
+    return canvas;
   } catch { return image; }
 }
 
@@ -167,14 +170,16 @@ export async function recognizeMeterImage(image: Blob | File | string, options: 
       const rawText = general.data.text ?? "";
       const cleaned = flattenWords(general.data).filter((w) => w.text.length > 0);
       const known = options.knownMeterNumber ? normalizeSerial(options.knownMeterNumber) : "";
+      const profile = options.profile ?? { displayType: null, integerDigits: null, decimalDigits: null, decimalSeparator: null, registerSemantics: null } satisfies MeterReadingProfile;
       const fallback = !cleaned.length ? rawText.split(/\s+/).filter(Boolean).map((t) => ({ text: t.trim(), confidence: 0, height: 0 })) : [];
       const allWords = [...cleaned, ...fallback];
       const excluded = new Set((options.excludeNumbers ?? []).filter((v) => v != null && String(v).trim() !== "").map((v) => normalizeSerial(String(v))));
       const serialProven = !known || allWords.some((w) => normalizeSerial(w.text) === known) || serialFoundInOcrText(rawText, known);
-      const candidates = allWords.map((w) => ({ ...w, shape: readingShape(w.text) })).filter((w) => w.shape.ok && w.shape.value != null && w.shape.value >= 0 && normalizeSerial(w.text) !== known && !excluded.has(normalizeSerial(w.text)) && !UNIT_RE.test(w.text.trim()) && !DATE_RE.test(normalizeDigits(w.text.trim())));
+      const decimalLike = allWords.some((w) => /\d[.,]\d/.test(normalizeDigits(w.text)));
+      const candidates = allWords.map((w) => ({ ...w, shape: readingShape(w.text, profile) })).filter((w) => w.shape.ok && w.shape.value != null && w.shape.value >= 0 && normalizeSerial(w.text) !== known && !excluded.has(normalizeSerial(w.text)) && !UNIT_RE.test(w.text.trim()) && !DATE_RE.test(normalizeDigits(w.text.trim())));
       const prev = options.previousReading ?? null;
       const scored = candidates.map((c) => { const digitLen = normalizeDigits(c.text).replace(/\D/g, "").length; let score = c.height * 2 + c.confidence + digitLen * 8; if (prev != null && c.shape.value != null) { if (c.shape.value >= prev) score += 25; if (Math.abs(c.shape.value - prev) <= Math.max(50, prev * 0.5)) score += 25; } return { ...c, score }; }).sort((a, b) => b.score - a.score);
-      const filteredPrev = scored.filter((c) => prev == null || c.shape.value !== prev); const seen = new Set<number>(); const usable = filteredPrev.filter((c) => { const v = c.shape.value as number; if (seen.has(v)) return false; seen.add(v); return true; }); const best = usable[0] ?? null; const second = usable[1] ?? null; const readingAmbiguous = !!best && !!second && second.score >= best.score * 0.97;
+      const filteredPrev = scored.filter((c) => prev == null || c.shape.value !== prev); const seen = new Set<number>(); const usable = filteredPrev.filter((c) => { const v = c.shape.value as number; if (seen.has(v)) return false; seen.add(v); return true; }); const best = usable[0] ?? null; const second = usable[1] ?? null; const readingAmbiguous = (!!best && !!second && second.score >= best.score * 0.97) || (profile.decimalDigits == null && decimalLike);
       const tokens: OcrToken[] = allWords.map((w) => ({ text: w.text, confidence: Math.round(w.confidence), height: Math.round(w.height), kind: classify(w.text, known, best ? w.text === best.text : false) }));
       const meterNumberMatch = serialProven ? (options.knownMeterNumber ?? null) : null;
       if (known && !serialProven) throw new Error(`عذراً، تعذر إثبات رقم العداد المرتبط (${options.knownMeterNumber}). أعد تصوير الرقم كاملاً وبوضوح.`);
