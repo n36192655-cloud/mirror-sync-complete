@@ -89,7 +89,7 @@ export const saveManualMeterReading = createServerFn({ method: "POST" })
     if (!customer || customer.tenant_id !== tenantId) throw new Error("المشترك غير موجود أو لا يتبع المؤسسة الحالية");
     const { data: assignment } = await client.from("meter_assignments").select("customer_id").eq("tenant_id", tenantId).eq("customer_id", data.customerId).eq("meter_id", data.meterId).lte("started_at", `${data.readingDate}T23:59:59.999Z`).or(`ended_at.is.null,ended_at.gte.${data.readingDate}T00:00:00.000Z`).limit(1).maybeSingle();
     if (!assignment) throw new Error("العداد غير مرتبط بالمشترك في تاريخ القراءة");
-    const { data: previousRow } = await client.from("water_readings").select("current_reading").eq("tenant_id", tenantId).eq("meter_id", data.meterId).neq("status", "rejected").lte("reading_date", data.readingDate).order("reading_date", { ascending: false }).order("created_at", { ascending: false }).limit(1).maybeSingle();
+    const { data: previousRow } = await client.from("water_readings").select("current_reading").eq("tenant_id", tenantId).eq("meter_id", data.meterId).eq("status", "approved").lte("reading_date", data.readingDate).order("reading_date", { ascending: false }).order("created_at", { ascending: false }).limit(1).maybeSingle();
     if (previousRow?.current_reading != null && data.currentReading < previousRow.current_reading) throw new Error("القراءة الحالية أقل من القراءة السابقة");
 
     let photoUrl: string | null = null;
