@@ -12,6 +12,21 @@ describe("assistant evidence validation", () => {
     expect(result?.claims).toHaveLength(1);
   });
 
+  test("accepts grounded dates and structured identifiers as string claims", () => {
+    const evidence = [
+      createEvidenceRecord("get_customer_overview", {
+        customer: { pay_account: "120045", meter_serial: "M-2026-09" },
+        last_bill: { issued_at: "2026-09-08" },
+      }),
+    ];
+    const id = evidence[0].id;
+    const result = validateFinalOutput(
+      `<FINAL_JSON>{"answer":"الحساب 120045، العداد M-2026-09، وآخر فاتورة بتاريخ 2026-09-08","claims":[{"text":"الحساب 120045","source_tool":"get_customer_overview","evidence_id":"${id}","field_path":"customer.pay_account","value":"120045"},{"text":"العداد M-2026-09","source_tool":"get_customer_overview","evidence_id":"${id}","field_path":"customer.meter_serial","value":"M-2026-09"},{"text":"آخر فاتورة بتاريخ 2026-09-08","source_tool":"get_customer_overview","evidence_id":"${id}","field_path":"last_bill.issued_at","value":"2026-09-08"}],"suggestions":[]}</FINAL_JSON>`,
+      evidence,
+    );
+    expect(result?.claims).toHaveLength(3);
+  });
+
   test("rejects fabricated values", () => {
     const evidence = [createEvidenceRecord("get_customer_period_summary", { totals: { billed_amount: 12500 } })];
     const id = evidence[0].id;
@@ -69,6 +84,16 @@ describe("assistant evidence validation", () => {
       evidence,
     );
     expect(result?.claims).toHaveLength(1);
+  });
+
+  test("rejects numeric substrings that are not actually present as evidence values", () => {
+    const evidence = [createEvidenceRecord("get_customer_period_summary", { totals: { billed: 1000 } })];
+    const id = evidence[0].id;
+    const result = validateFinalOutput(
+      `<FINAL_JSON>{"answer":"المبلغ 100 ريال","claims":[{"text":"المبلغ 100 ريال","source_tool":"get_customer_period_summary","evidence_id":"${id}","field_path":"totals.billed","value":100}],"suggestions":[]}</FINAL_JSON>`,
+      evidence,
+    );
+    expect(result).toBeNull();
   });
 
   test("fails closed when evidence is too large and marked incomplete", () => {
