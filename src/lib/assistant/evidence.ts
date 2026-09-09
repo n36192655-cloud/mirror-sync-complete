@@ -32,10 +32,7 @@ function stableScalar(value: unknown): string {
 }
 
 function normalizeDigits(value: string): string {
-  return value
-    .replace(/[٠-٩]/g, (d) => String("٠١٢٣٤٥٦٧٨٩".indexOf(d)))
-    .replace(/[٬,]/g, "")
-    .replace(/٫/g, ".");
+  return value.replace(/[٠-٩]/g, (d) => String("٠١٢٣٤٥٦٧٨٩".indexOf(d))).replace(/[٬,]/g, "").replace(/٫/g, ".");
 }
 
 function scalarEquals(a: unknown, b: unknown): boolean {
@@ -56,16 +53,13 @@ function getByPath(root: unknown, path: string): unknown {
 }
 
 function numericTokens(text: string): string[] {
-  return (normalizeDigits(text).match(/(?<![A-Za-z_])\\d+(?:[.]\\d+)?/g) ?? []).filter(Boolean);
+  return normalizeDigits(text).match(/\\d+(?:[.]\\d+)?/g) ?? [];
 }
 
 function containsNumericEvidence(answer: string, evidence: EvidenceRecord[]): boolean {
   const tokens = numericTokens(answer);
   if (tokens.length === 0) return true;
-  const serialized = evidence
-    .filter((e) => e.complete && !e.truncated)
-    .map((e) => normalizeDigits(JSON.stringify(e.data ?? null)))
-    .join(" ");
+  const serialized = evidence.filter((e) => e.complete && !e.truncated).map((e) => normalizeDigits(JSON.stringify(e.data ?? null))).join(" ");
   return tokens.every((token) => serialized.includes(token));
 }
 
@@ -82,26 +76,15 @@ export function createEvidenceRecord(tool: string, data: unknown, tableRows = 0)
 }
 
 export function buildModelEvidence(record: EvidenceRecord): string {
-  return JSON.stringify({
-    evidence_id: record.id,
-    source_tool: record.tool,
-    authoritative: record.complete && !record.truncated,
-    complete: record.complete,
-    truncated: record.truncated,
-    data: record.data,
-  });
+  return JSON.stringify({ evidence_id: record.id, source_tool: record.tool, authoritative: record.complete && !record.truncated, complete: record.complete, truncated: record.truncated, data: record.data });
 }
 
 export function validateFinalOutput(raw: string, evidence: EvidenceRecord[]): ValidatedFinal | null {
-  const match = raw.match(/<FINAL_JSON>\\s*([\\s\\S]*?)\\s*<\\/FINAL_JSON>/i);
+  const match = raw.match(new RegExp("<FINAL_JSON>\\\\s*([\\\\s\\\\S]*?)\\\\s*</FINAL_JSON>", "i"));
   if (!match) return null;
 
   let parsed: unknown;
-  try {
-    parsed = JSON.parse(match[1]);
-  } catch {
-    return null;
-  }
+  try { parsed = JSON.parse(match[1]); } catch { return null; }
   if (!parsed || typeof parsed !== "object") return null;
   const obj = parsed as Record<string, unknown>;
   const answer = typeof obj.answer === "string" ? obj.answer.trim() : "";
@@ -111,7 +94,6 @@ export function validateFinalOutput(raw: string, evidence: EvidenceRecord[]): Va
   const rawClaims = Array.isArray(obj.claims) ? obj.claims : [];
   if (rawClaims.length > MAX_CLAIMS) return null;
   const claims: GroundedClaim[] = [];
-
   for (const item of rawClaims) {
     if (!item || typeof item !== "object") return null;
     const claim = item as Record<string, unknown>;
@@ -133,13 +115,7 @@ export function validateFinalOutput(raw: string, evidence: EvidenceRecord[]): Va
 
   if (numericTokens(answer).length > 0 && claims.length === 0) return null;
 
-  const suggestions = Array.isArray(obj.suggestions)
-    ? obj.suggestions
-        .filter((s): s is string => typeof s === "string" && s.trim())
-        .map((s) => s.trim())
-        .slice(0, MAX_FINAL_SUGGESTIONS)
-    : [];
-
+  const suggestions = Array.isArray(obj.suggestions) ? obj.suggestions.filter((s): s is string => typeof s === "string" && s.trim()).map((s) => s.trim()).slice(0, MAX_FINAL_SUGGESTIONS) : [];
   return { answer, claims, suggestions };
 }
 
