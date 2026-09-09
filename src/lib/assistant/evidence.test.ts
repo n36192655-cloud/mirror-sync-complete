@@ -42,13 +42,33 @@ describe("assistant evidence validation", () => {
   });
 
   test("rejects unsupported numeric prose even if another claim is grounded", () => {
-    const evidence = [createEvidenceRecord("get_customer_period_summary", { totals: { billed: 12500 } })];
+    const evidence = [createEvidenceRecord("get_customer_period_summary", { totals: { billed: 12500, invoice_count: 99 } })];
     const id = evidence[0].id;
     const result = validateFinalOutput(
       `<FINAL_JSON>{"answer":"إجمالي المفوتر 12,500 ريال وعدد الفواتير 99","claims":[{"text":"إجمالي المفوتر 12,500 ريال","source_tool":"get_customer_period_summary","evidence_id":"${id}","field_path":"totals.billed","value":12500}],"suggestions":[]}</FINAL_JSON>`,
       evidence,
     );
     expect(result).toBeNull();
+  });
+
+  test("rejects a numeric value that exists in evidence but is not claimed", () => {
+    const evidence = [createEvidenceRecord("get_customer_period_summary", { totals: { billed: 12500, paid: 9000 } })];
+    const id = evidence[0].id;
+    const result = validateFinalOutput(
+      `<FINAL_JSON>{"answer":"إجمالي المفوتر 12,500 ريال والمدفوع 9,000 ريال","claims":[{"text":"إجمالي المفوتر 12,500 ريال","source_tool":"get_customer_period_summary","evidence_id":"${id}","field_path":"totals.billed","value":12500}],"suggestions":[]}</FINAL_JSON>`,
+      evidence,
+    );
+    expect(result).toBeNull();
+  });
+
+  test("accepts Arabic-Indic digits when the grounded scalar matches", () => {
+    const evidence = [createEvidenceRecord("get_customer_period_summary", { totals: { billed: 12500 } })];
+    const id = evidence[0].id;
+    const result = validateFinalOutput(
+      `<FINAL_JSON>{"answer":"إجمالي المفوتر ١٢٬٥٠٠ ريال","claims":[{"text":"إجمالي المفوتر ١٢٬٥٠٠ ريال","source_tool":"get_customer_period_summary","evidence_id":"${id}","field_path":"totals.billed","value":12500}],"suggestions":[]}</FINAL_JSON>`,
+      evidence,
+    );
+    expect(result?.claims).toHaveLength(1);
   });
 
   test("fails closed when evidence is too large and marked incomplete", () => {
