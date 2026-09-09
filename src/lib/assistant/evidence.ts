@@ -56,18 +56,30 @@ function numericTokens(text: string): string[] {
   return normalizeDigits(text).match(/\d+(?:\.\d+)?/g) ?? [];
 }
 
+function evidenceNumericTokens(evidence: EvidenceRecord[]): Set<string> {
+  const tokens = new Set<string>();
+  for (const record of evidence) {
+    if (!record.complete || record.truncated) continue;
+    for (const token of numericTokens(JSON.stringify(record.data ?? null))) tokens.add(token);
+  }
+  return tokens;
+}
+
 function containsNumericEvidence(answer: string, evidence: EvidenceRecord[]): boolean {
   const tokens = numericTokens(answer);
   if (tokens.length === 0) return true;
-  const serialized = evidence.filter((e) => e.complete && !e.truncated).map((e) => normalizeDigits(JSON.stringify(e.data ?? null))).join(" ");
-  return tokens.every((token) => serialized.includes(token));
+  const available = evidenceNumericTokens(evidence);
+  return tokens.every((token) => available.has(token));
 }
 
 function everyNumericClaimIsRepresented(answer: string, claims: GroundedClaim[]): boolean {
   const tokens = numericTokens(answer);
   if (tokens.length === 0) return true;
-  const claimedValues = claims.map((claim) => normalizeDigits(stableScalar(claim.value))).filter((value) => /^\d+(?:\.\d+)?$/.test(value));
-  if (claimedValues.length === 0) return false;
+
+  // A claim value may be a date, account number, meter serial, or other
+  // structured string. Validate the numeric fragments of the scalar itself,
+  // rather than requiring the scalar to be a JavaScript number.
+  const claimedValues = claims.flatMap((claim) => numericTokens(normalizeDigits(stableScalar(claim.value))));
   const remaining = [...claimedValues];
   for (const token of tokens) {
     const index = remaining.indexOf(token);
@@ -153,6 +165,7 @@ export const GROUNDED_FINAL_FORMAT = `
 - كل رقم أو اسم أو تاريخ أو حالة أو حقيقة تشغيلية مهمة في answer يجب أن يكون لها claim.
 - يجب أن يظهر نص كل claim فعلياً داخل answer؛ لا تنشئ claims غير ممثلة في النص.
 - كل رقم ظاهر في answer يجب أن يكون ممثلاً بقيمة claim مطابقة؛ وجود الرقم في evidence وحده لا يكفي.
+- القيم المركبة مثل التاريخ أو رقم الحساب أو سيريال العداد يمكن أن تكون strings، ويجب أن تطابق field_path بالكامل.
 - لا يكفي أن تكون القيمة موجودة في مكان ما؛ يجب تحديد field_path الدقيق داخل evidence_id الصحيح.
 - evidence_id وsource_tool يجب أن يشيرا إلى نتيجة أداة نفذت في هذه الجولة وكانت complete=true وtruncated=false.
 - value يجب أن يساوي القيمة الموجودة في field_path؛ لا تستخدم قيمة من الذاكرة أو الحساب الذهني للنموذج.
