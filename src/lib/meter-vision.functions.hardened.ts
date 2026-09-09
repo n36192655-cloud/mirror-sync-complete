@@ -113,7 +113,7 @@ async function loadAuthoritativeContext(context: { supabase: SupabaseClient; use
   if (!assignment) throw new Error("العداد غير مرتبط بالمشترك في تاريخ القراءة");
   const { data: previousRow } = await context.supabase.from("water_readings")
     .select("current_reading").eq("tenant_id", tenantId).eq("meter_id", data.meterId)
-    .neq("status", "rejected").lte("reading_date", data.readingDate)
+    .eq("status", "approved").lte("reading_date", data.readingDate)
     .order("reading_date", { ascending: false }).order("created_at", { ascending: false }).limit(1).maybeSingle();
   return { tenantId, meter, profile: profileFromRow(meter as Record<string, unknown>), previousReading: previousRow?.current_reading ?? 0 };
 }
@@ -153,8 +153,7 @@ async function runInference(apiKey: string, data: VerificationInput, expectedMet
       messages: [
         { role: "system", content: system },
         { role: "user", content: [
-          { type: "text", text: `الرقم المتوقع يستخدم للمقارنة الدقيقة فقط. القراءة السابقة: ${previousReading}. إعداد العداد: ${JSON.stringify({ displayType: profile.displayType, integerDigits: profile.integerDigits, decimalDigits: profile.decimalDigits, decimalSeparator: profile.decimalSeparator, registerSemantics: profile.registerSemantics })}. لا تستنتج معنى اللون من نفسك ولا تستخدم الرقم المتوقع كبديل عن الرقم المرئي.` },
-          { type: "image_url", image_url: { url: data.imageDataUrl } },
+          { role: "user", content: [{ type: "text", text: `الرقم المتوقع يستخدم للمقارنة الدقيقة فقط. القراءة السابقة: ${previousReading}. إعداد العداد: ${JSON.stringify({ displayType: profile.displayType, integerDigits: profile.integerDigits, decimalDigits: profile.decimalDigits, decimalSeparator: profile.decimalSeparator, registerSemantics: profile.registerSemantics })}. لا تستنتج معنى اللون من نفسك ولا تستخدم الرقم المتوقع كبديل عن الرقم المرئي.` }, { type: "image_url", image_url: { url: data.imageDataUrl } }] },
         ] },
       ],
       response_format: { type: "json_schema", json_schema: { name: "meter_reading", schema } },
