@@ -1,7 +1,7 @@
 import { useId } from "react";
 import type { AssistantTable } from "@/lib/assistant.functions";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { CheckCircle2, FileDown, Info, Printer } from "lucide-react";
+import { CheckCircle2, Info, Printer, Table2 } from "lucide-react";
 
 const numberFormatter = new Intl.NumberFormat("ar-YE", {
   maximumFractionDigits: 2,
@@ -14,15 +14,18 @@ function fmtCell(value: string | number | null): string {
 }
 
 function statusClass(value: string): string {
-  const v = value.toLocaleLowerCase("ar");
-  if (["approved", "paid", "active", "مؤكد", "مسدد", "نشط", "معتمد"].some((x) => v.includes(x))) {
-    return "border-emerald-200/80 bg-emerald-50 text-emerald-800 dark:border-emerald-900/60 dark:bg-emerald-950/35 dark:text-emerald-300";
+  const v = value.trim().toLocaleLowerCase("ar");
+
+  // Negative states must be checked first because phrases such as
+  // "غير مسدد" and "غير نشط" contain the positive words as substrings.
+  if (["rejected", "unpaid", "suspended", "غير مسدد", "غير معتمد", "غير نشط", "مرفوض", "موقوف"].some((x) => v.includes(x))) {
+    return "border-red-200/80 bg-red-50 text-red-800 dark:border-red-900/60 dark:bg-red-950/35 dark:text-red-300";
   }
   if (["pending", "partial", "issued", "معلق", "جزئي", "صادر", "قيد"].some((x) => v.includes(x))) {
     return "border-amber-200/80 bg-amber-50 text-amber-800 dark:border-amber-900/60 dark:bg-amber-950/35 dark:text-amber-300";
   }
-  if (["rejected", "unpaid", "suspended", "مرفوض", "غير مسدد", "موقوف"].some((x) => v.includes(x))) {
-    return "border-red-200/80 bg-red-50 text-red-800 dark:border-red-900/60 dark:bg-red-950/35 dark:text-red-300";
+  if (["approved", "paid", "active", "مؤكد", "مسدد", "نشط", "معتمد"].some((x) => v.includes(x))) {
+    return "border-emerald-200/80 bg-emerald-50 text-emerald-800 dark:border-emerald-900/60 dark:bg-emerald-950/35 dark:text-emerald-300";
   }
   return "";
 }
@@ -102,6 +105,10 @@ export function AssistantAnswerView({
         .assistant-table tbody tr:last-child td { border-bottom: 0; }
         .assistant-table tbody tr:nth-child(even) { background: hsl(var(--muted) / 0.18); }
         .assistant-table tbody tr:hover { background: hsl(var(--primary) / 0.055); }
+        .assistant-table caption { caption-side: top; }
+        @media (prefers-reduced-motion: reduce) {
+          .assistant-table tbody tr { transition: none !important; }
+        }
         @media print {
           body * { visibility: hidden !important; }
           .assistant-print-root, .assistant-print-root * { visibility: visible !important; }
@@ -149,7 +156,7 @@ export function AssistantAnswerView({
               <span className="hidden sm:inline">طباعة / PDF</span>
               <span className="sm:hidden">PDF</span>
             </button>
-            <span className="hidden h-9 w-9 items-center justify-center rounded-xl text-muted-foreground sm:inline-flex" title="البيانات موثقة من أدوات النظام" aria-label="البيانات موثقة من أدوات النظام">
+            <span className="hidden h-9 w-9 items-center justify-center rounded-xl text-emerald-600 dark:text-emerald-400 sm:inline-flex" title="البيانات موثقة من أدوات النظام" aria-label="البيانات موثقة من أدوات النظام">
               <CheckCircle2 className="h-4 w-4" aria-hidden="true" />
             </span>
           </div>
@@ -164,26 +171,36 @@ export function AssistantAnswerView({
 
       {tables.map((table, tableIndex) => {
         const hasRows = table.rows.length > 0;
+        const columnCount = table.columns.length;
         return (
           <article key={tableIndex} className="overflow-hidden rounded-2xl border border-border/70 bg-card shadow-[0_6px_24px_-18px_hsl(var(--foreground)/0.35)]">
             <header className="flex items-center justify-between gap-3 border-b border-border/70 bg-muted/35 px-4 py-3 sm:px-5">
-              <div className="min-w-0">
-                <h3 className="truncate text-[13px] font-bold text-foreground sm:text-sm">{table.title}</h3>
-                <p className="mt-0.5 text-[10px] text-muted-foreground sm:text-[11px]">
-                  {hasRows ? `${numberFormatter.format(table.rows.length)} صف` : "لا توجد نتائج"}
-                </p>
+              <div className="flex min-w-0 items-center gap-2.5">
+                <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
+                  <Table2 className="h-4 w-4" aria-hidden="true" />
+                </div>
+                <div className="min-w-0">
+                  <h3 className="truncate text-[13px] font-bold text-foreground sm:text-sm">{table.title}</h3>
+                  <p className="mt-0.5 text-[10px] text-muted-foreground sm:text-[11px]">
+                    {hasRows ? `${numberFormatter.format(table.rows.length)} صف · ${numberFormatter.format(columnCount)} أعمدة` : "لا توجد نتائج"}
+                  </p>
+                </div>
               </div>
-              <FileDown className="h-4 w-4 shrink-0 text-muted-foreground" aria-hidden="true" />
+              <span className="shrink-0 rounded-full border border-border/70 bg-background/70 px-2 py-1 text-[10px] font-medium text-muted-foreground" aria-label={hasRows ? `عدد الصفوف ${table.rows.length}` : "لا توجد نتائج"}>
+                {hasRows ? numberFormatter.format(table.rows.length) : "0"}
+              </span>
             </header>
 
             {hasRows ? (
               <div className="overflow-x-auto overscroll-x-contain">
-                <Table className="assistant-table min-w-full text-right">
+                <Table className="assistant-table min-w-full text-right" aria-label={table.title}>
+                  <caption className="sr-only">{table.title} — {numberFormatter.format(table.rows.length)} صف</caption>
                   <TableHeader className="bg-muted/55">
                     <TableRow className="hover:bg-transparent">
                       {table.columns.map((column, columnIndex) => (
                         <TableHead
                           key={`${column}-${columnIndex}`}
+                          scope="col"
                           className="whitespace-nowrap px-3 py-3 text-right text-[11px] font-bold leading-5 text-foreground sm:px-4 sm:text-xs"
                         >
                           {column}
@@ -194,7 +211,8 @@ export function AssistantAnswerView({
                   <TableBody>
                     {table.rows.map((row, rowIndex) => (
                       <TableRow key={rowIndex} className="transition-colors">
-                        {row.map((cell, columnIndex) => {
+                        {table.columns.map((_, columnIndex) => {
+                          const cell = row[columnIndex] ?? null;
                           const text = fmtCell(cell);
                           const status = typeof cell === "string" ? statusClass(cell) : "";
                           const isNumber = typeof cell === "number";
