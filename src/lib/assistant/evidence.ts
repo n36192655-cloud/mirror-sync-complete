@@ -77,6 +77,13 @@ function everyNumericClaimIsRepresented(answer: string, claims: GroundedClaim[])
   return true;
 }
 
+function everyClaimAppearsInAnswer(answer: string, claims: GroundedClaim[]): boolean {
+  return claims.every((claim) => {
+    const claimText = normalizeDigits(claim.text).trim();
+    return claimText.length > 0 && normalizeDigits(answer).includes(claimText);
+  });
+}
+
 export function createEvidenceRecord(tool: string, data: unknown, tableRows = 0): EvidenceRecord {
   const serialized = JSON.stringify(data ?? null);
   const truncated = serialized.length > MAX_EVIDENCE_BYTES;
@@ -131,6 +138,7 @@ export function validateFinalOutput(raw: string, evidence: EvidenceRecord[]): Va
     claims.push({ text, source_tool: sourceTool, evidence_id: evidenceId, field_path: fieldPath, value });
   }
 
+  if (!everyClaimAppearsInAnswer(answer, claims)) return null;
   if (!everyNumericClaimIsRepresented(answer, claims)) return null;
 
   const suggestions = Array.isArray(obj.suggestions) ? obj.suggestions.filter((s): s is string => typeof s === "string" && s.trim()).map((s) => s.trim()).slice(0, MAX_FINAL_SUGGESTIONS) : [];
@@ -143,6 +151,7 @@ export const GROUNDED_FINAL_FORMAT = `
 
 قواعد claims صارمة جداً:
 - كل رقم أو اسم أو تاريخ أو حالة أو حقيقة تشغيلية مهمة في answer يجب أن يكون لها claim.
+- يجب أن يظهر نص كل claim فعلياً داخل answer؛ لا تنشئ claims غير ممثلة في النص.
 - كل رقم ظاهر في answer يجب أن يكون ممثلاً بقيمة claim مطابقة؛ وجود الرقم في evidence وحده لا يكفي.
 - لا يكفي أن تكون القيمة موجودة في مكان ما؛ يجب تحديد field_path الدقيق داخل evidence_id الصحيح.
 - evidence_id وsource_tool يجب أن يشيرا إلى نتيجة أداة نفذت في هذه الجولة وكانت complete=true وtruncated=false.
