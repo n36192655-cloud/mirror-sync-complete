@@ -24,6 +24,10 @@ const MAX_FINAL_SUGGESTIONS = 4;
 const MAX_EVIDENCE_BYTES = 64_000;
 const MAX_CLAIMS = 40;
 
+function newEvidenceId(): string {
+  return `ev_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+}
+
 function stableScalar(value: unknown): string {
   if (value === null || value === undefined) return "null";
   if (typeof value === "number") return Number.isFinite(value) ? String(value) : "NaN";
@@ -75,10 +79,6 @@ function containsNumericEvidence(answer: string, evidence: EvidenceRecord[]): bo
 function everyNumericClaimIsRepresented(answer: string, claims: GroundedClaim[]): boolean {
   const tokens = numericTokens(answer);
   if (tokens.length === 0) return true;
-
-  // A claim value may be a date, account number, meter serial, or other
-  // structured string. Validate the numeric fragments of the scalar itself,
-  // rather than requiring the scalar to be a JavaScript number.
   const claimedValues = claims.flatMap((claim) => numericTokens(normalizeDigits(stableScalar(claim.value))));
   const remaining = [...claimedValues];
   for (const token of tokens) {
@@ -100,11 +100,21 @@ export function createEvidenceRecord(tool: string, data: unknown, tableRows = 0)
   const serialized = JSON.stringify(data ?? null);
   const truncated = serialized.length > MAX_EVIDENCE_BYTES;
   return {
-    id: `ev_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`,
+    id: newEvidenceId(),
     tool,
     data: truncated ? { error: "EVIDENCE_TOO_LARGE", tool, tableRows } : data,
     complete: !truncated,
     truncated,
+  };
+}
+
+export function createFailedEvidenceRecord(tool: string): EvidenceRecord {
+  return {
+    id: newEvidenceId(),
+    tool,
+    data: { error: "TOOL_EXECUTION_FAILED" },
+    complete: false,
+    truncated: false,
   };
 }
 
