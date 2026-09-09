@@ -80,11 +80,15 @@ export function buildModelEvidence(record: EvidenceRecord): string {
 }
 
 export function validateFinalOutput(raw: string, evidence: EvidenceRecord[]): ValidatedFinal | null {
-  const match = raw.match(new RegExp("<FINAL_JSON>\\\\s*([\\\\s\\\\S]*?)\\\\s*</FINAL_JSON>", "i"));
-  if (!match) return null;
+  const startTag = "<FINAL_JSON>";
+  const endTag = "</FINAL_JSON>";
+  const start = raw.indexOf(startTag);
+  const end = raw.indexOf(endTag, start + startTag.length);
+  if (start < 0 || end < 0 || end <= start + startTag.length) return null;
+  const body = raw.slice(start + startTag.length, end).trim();
 
   let parsed: unknown;
-  try { parsed = JSON.parse(match[1]); } catch { return null; }
+  try { parsed = JSON.parse(body); } catch { return null; }
   if (!parsed || typeof parsed !== "object") return null;
   const obj = parsed as Record<string, unknown>;
   const answer = typeof obj.answer === "string" ? obj.answer.trim() : "";
