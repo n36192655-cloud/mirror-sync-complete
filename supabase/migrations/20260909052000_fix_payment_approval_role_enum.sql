@@ -1,8 +1,7 @@
 BEGIN;
 
--- The production app_role enum is authoritative: super_admin, manager,
--- reader, collector. Do not reference nonexistent enum values such as admin
--- or accountant in financial authorization checks.
+-- Production payments has no updated_at column. Keep approval writes limited
+-- to the columns that actually exist while retaining authoritative role checks.
 CREATE OR REPLACE FUNCTION public.approve_payment(_payment_id uuid)
 RETURNS void
 LANGUAGE plpgsql
@@ -29,7 +28,6 @@ BEGIN
   END IF;
   IF _pay.status<>'pending' THEN RAISE EXCEPTION 'only pending payments can be approved'; END IF;
 
-  -- Only roles that actually exist in public.app_role are referenced.
   IF NOT (
     public.has_tenant_role(_pay.tenant_id,'manager'::public.app_role)
     OR public.has_tenant_role(_pay.tenant_id,'super_admin'::public.app_role)
@@ -59,7 +57,7 @@ BEGIN
   END;
 
   UPDATE public.payments
-  SET status='approved', approved_at=NOW(), approved_by=_uid, updated_at=NOW()
+  SET status='approved', approved_at=NOW(), approved_by=_uid
   WHERE id=_pay.id;
 
   SELECT COALESCE(current_balance,0)
