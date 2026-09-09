@@ -53,7 +53,7 @@ function getByPath(root: unknown, path: string): unknown {
 }
 
 function numericTokens(text: string): string[] {
-  return normalizeDigits(text).match(/\\d+(?:[.]\\d+)?/g) ?? [];
+  return normalizeDigits(text).match(/\d+(?:\.\d+)?/g) ?? [];
 }
 
 function containsNumericEvidence(answer: string, evidence: EvidenceRecord[]): boolean {
@@ -61,6 +61,20 @@ function containsNumericEvidence(answer: string, evidence: EvidenceRecord[]): bo
   if (tokens.length === 0) return true;
   const serialized = evidence.filter((e) => e.complete && !e.truncated).map((e) => normalizeDigits(JSON.stringify(e.data ?? null))).join(" ");
   return tokens.every((token) => serialized.includes(token));
+}
+
+function everyNumericClaimIsRepresented(answer: string, claims: GroundedClaim[]): boolean {
+  const tokens = numericTokens(answer);
+  if (tokens.length === 0) return true;
+  const claimedValues = claims.map((claim) => normalizeDigits(stableScalar(claim.value))).filter((value) => /^\d+(?:\.\d+)?$/.test(value));
+  if (claimedValues.length === 0) return false;
+  const remaining = [...claimedValues];
+  for (const token of tokens) {
+    const index = remaining.indexOf(token);
+    if (index < 0) return false;
+    remaining.splice(index, 1);
+  }
+  return true;
 }
 
 export function createEvidenceRecord(tool: string, data: unknown, tableRows = 0): EvidenceRecord {
@@ -117,7 +131,7 @@ export function validateFinalOutput(raw: string, evidence: EvidenceRecord[]): Va
     claims.push({ text, source_tool: sourceTool, evidence_id: evidenceId, field_path: fieldPath, value });
   }
 
-  if (numericTokens(answer).length > 0 && claims.length === 0) return null;
+  if (!everyNumericClaimIsRepresented(answer, claims)) return null;
 
   const suggestions = Array.isArray(obj.suggestions) ? obj.suggestions.filter((s): s is string => typeof s === "string" && s.trim()).map((s) => s.trim()).slice(0, MAX_FINAL_SUGGESTIONS) : [];
   return { answer, claims, suggestions };
@@ -129,6 +143,7 @@ export const GROUNDED_FINAL_FORMAT = `
 
 قواعد claims صارمة جداً:
 - كل رقم أو اسم أو تاريخ أو حالة أو حقيقة تشغيلية مهمة في answer يجب أن يكون لها claim.
+- كل رقم ظاهر في answer يجب أن يكون ممثلاً بقيمة claim مطابقة؛ وجود الرقم في evidence وحده لا يكفي.
 - لا يكفي أن تكون القيمة موجودة في مكان ما؛ يجب تحديد field_path الدقيق داخل evidence_id الصحيح.
 - evidence_id وsource_tool يجب أن يشيرا إلى نتيجة أداة نفذت في هذه الجولة وكانت complete=true وtruncated=false.
 - value يجب أن يساوي القيمة الموجودة في field_path؛ لا تستخدم قيمة من الذاكرة أو الحساب الذهني للنموذج.
