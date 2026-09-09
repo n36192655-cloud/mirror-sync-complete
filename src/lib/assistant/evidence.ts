@@ -160,6 +160,10 @@ export function validateFinalOutput(raw: string, evidence: EvidenceRecord[]): Va
     claims.push({ text, source_tool: sourceTool, evidence_id: evidenceId, field_path: fieldPath, value });
   }
 
+  // Once authoritative tool data exists, a final answer must contain at least
+  // one explicit claim. This prevents the model from turning verified tool use
+  // into an ungrounded natural-language conclusion.
+  if (evidence.some((record) => record.complete && !record.truncated) && claims.length === 0) return null;
   if (!everyClaimAppearsInAnswer(answer, claims)) return null;
   if (!everyNumericClaimIsRepresented(answer, claims)) return null;
 
