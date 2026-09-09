@@ -25,10 +25,17 @@ export const askAssistant = createServerFn({ method: "POST" }).middleware([requi
   if (!apiKey) throw new Error("خدمة الذكاء الاصطناعي غير مهيأة (GEMINI_API_KEY مفقود).");
 
   const { ASSISTANT_TOOLS, runAssistantTool } = await import("./assistant/tools.server");
+  const { PRECISION_ASSISTANT_TOOLS, runPrecisionAssistantTool } = await import("./assistant/precision-tools.server");
   const { EXTRA_ASSISTANT_TOOLS, runExtraAssistantTool } = await import("./assistant/extra-tools.server");
   const { geminiChat, GeminiError } = await import("./gemini.server");
   const today = yemenToday();
-  const allTools = [...ASSISTANT_TOOLS, ...EXTRA_ASSISTANT_TOOLS];
+
+  const precisionNames = new Set(PRECISION_ASSISTANT_TOOLS.map((tool) => tool.function.name));
+  const allTools = [
+    ...ASSISTANT_TOOLS.filter((tool) => !precisionNames.has(tool.function.name)),
+    ...PRECISION_ASSISTANT_TOOLS,
+    ...EXTRA_ASSISTANT_TOOLS,
+  ];
   const allowedTools = new Set(allTools.map((tool) => tool.function.name));
   const extraToolNames = new Set(EXTRA_ASSISTANT_TOOLS.map((tool) => tool.function.name));
 
@@ -100,24 +107,13 @@ ${GROUNDED_FINAL_FORMAT}`;
     if (calls.length === 0) {
       const final = validateFinalOutput((msg.content ?? "").trim(), evidence);
       if (!final || final.answer.length > MAX_ANSWER_CHARS) {
-        return {
-          answer: "لا أستطيع تأكيد هذه المعلومة من الأدلة الحالية. لم أُصدر إجابة غير موثقة حفاظاً على دقة بيانات ميزان.",
-          tables,
-          tools: usedTools,
-          suggestions: ["أعد تحديد المشترك", "حدد الفترة المطلوبة", "اطلب كشفاً تفصيلياً"],
-        };
+        return { answer: "لا أستطيع تأكيد هذه المعلومة من الأدلة الحالية. لم أُصدر إجابة غير موثقة حفاظاً على دقة بيانات ميزان.", tables, tools: usedTools, suggestions: ["أعد تحديد المشترك", "حدد الفترة المطلوبة", "اطلب كشفاً تفصيلياً"] };
       }
       return { answer: final.answer, tables, tools: usedTools, suggestions: final.suggestions };
     }
 
-    // تنفيذ استدعاء واحد فقط في كل دورة يمنع سباق الهوية مثل search + overview في نفس الرسالة.
     if (calls.length !== 1) {
-      return {
-        answer: "أوقفت هذا الاستعلام لأن النموذج طلب أكثر من عملية في خطوة واحدة. لن أنفذ عمليات متوازية قد تتجاوز ترتيب التحقق.",
-        tables,
-        tools: usedTools,
-        suggestions: ["حدد المشترك أولاً", "ثم اطلب التحليل", "ثم اطلب التفاصيل"],
-      };
+      return { answer: "أوقفت هذا الاستعلام لأن النموذج طلب أكثر من عملية في خطوة واحدة. لن أنفذ عمليات متوازية قد تتجاوز ترتيب التحقق.", tables, tools: usedTools, suggestions: ["حدد المشترك أولاً", "ثم اطلب التحليل", "ثم اطلب التفاصيل"] };
     }
 
     const call = calls[0];
@@ -127,9 +123,7 @@ ${GROUNDED_FINAL_FORMAT}`;
     toolCallCount += 1;
 
     const name = call.function.name;
-    if (!allowedTools.has(name)) {
-      return { answer: "لا يمكن تنفيذ هذه العملية من خلال ميزان الذكي.", tables, tools: usedTools, suggestions: [] };
-    }
+    if (!allowedTools.has(name)) return { answer: "لا يمكن تنفيذ هذه العملية من خلال ميزان الذكي.", tables, tools: usedTools, suggestions: [] };
 
     let args: Record<string, unknown> = {};
     try {
@@ -141,20 +135,17 @@ ${GROUNDED_FINAL_FORMAT}`;
     }
 
     if ("customer_id" in args && typeof args.customer_id === "string" && !verifiedCustomerIds.has(args.customer_id)) {
-      return {
-        answer: "لا يمكنني استخدام هوية هذا المشترك قبل التحقق منها من بيانات ميزان الحالية.",
-        tables,
-        tools: usedTools,
-        suggestions: ["ابحث عن المشترك بالاسم", "ابحث برقم الحساب", "ابحث برقم العداد"],
-      };
+      return { answer: "لا يمكنني استخدام هوية هذا المشترك قبل التحقق منها من بيانات ميزان الحالية.", tables, tools: usedTools, suggestions: ["ابحث عن المشترك بالاسم", "ابحث برقم الحساب", "ابحث برقم العداد"] };
     }
 
     usedTools.push(name);
     let result;
     try {
-      result = extraToolNames.has(name)
-        ? await runExtraAssistantTool(context.supabase, name as Parameters<typeof runExtraAssistantTool>[1], args)
-        : await runAssistantTool(context.supabase, name, args);
+      result = precisionNames.has(name)
+        ? await runPrecisionAssistantTool(context.supabase, name, args)
+        : extraToolNames.has(name)
+          ? await runExtraAssistantTool(context.supabase, name as Parameters<typeof runExtraAssistantTool>[1], args)
+          : await runAssistantTool(context.supabase, name, args);
     } catch (err) {
       console.error("[assistant] tool failed", name, err);
       result = { ok: false, data: { error: "تعذر تنفيذ الاستعلام." } };
@@ -164,21 +155,13 @@ ${GROUNDED_FINAL_FORMAT}`;
 
     if (name === "search_customers") {
       const dataResult = result.data as { found?: boolean; count?: number; matches?: Array<{ id?: string; name?: string; pay_account?: string; meter_serial?: string }> };
-      if (dataResult.found === false) {
-        return { answer: "لم أعثر على مشترك مطابق لهذا البحث. لن أعرض بيانات مشترك آخر.", tables, tools: usedTools, suggestions: ["ابحث برقم الحساب", "ابحث برقم الهاتف", "ابحث برقم العداد"] };
-      }
+      if (dataResult.found === false) return { answer: "لم أعثر على مشترك مطابق لهذا البحث. لن أعرض بيانات مشترك آخر.", tables, tools: usedTools, suggestions: ["ابحث برقم الحساب", "ابحث برقم الهاتف", "ابحث برقم العداد"] };
       if ((dataResult.count ?? 0) !== 1) {
-        const suggestions = (dataResult.matches ?? []).slice(0, 4).map((m) => {
-          const account = m.pay_account ? ` — حساب ${m.pay_account}` : "";
-          const meter = m.meter_serial ? ` — عداد ${m.meter_serial}` : "";
-          return `اختر ${m.name ?? "المشترك"}${account}${meter}`;
-        });
+        const suggestions = (dataResult.matches ?? []).slice(0, 4).map((m) => `اختر ${m.name ?? "المشترك"}${m.pay_account ? ` — حساب ${m.pay_account}` : ""}${m.meter_serial ? ` — عداد ${m.meter_serial}` : ""}`);
         return { answer: "نتيجة البحث غير فريدة، لذلك لم أحدد مشتركاً من تلقاء نفسي. اختر هوية واحدة من الخيارات.", tables, tools: usedTools, suggestions };
       }
       const id = dataResult.matches?.[0]?.id;
-      if (!id) {
-        return { answer: "وجدت مشتركاً لكن لم أتمكن من إثبات المعرّف الداخلي بأمان، لذلك لم أتابع.", tables, tools: usedTools, suggestions: ["أعد البحث برقم الحساب"] };
-      }
+      if (!id) return { answer: "وجدت مشتركاً لكن لم أتمكن من إثبات المعرّف الداخلي بأمان، لذلك لم أتابع.", tables, tools: usedTools, suggestions: ["أعد البحث برقم الحساب"] };
       verifiedCustomerIds.add(id);
     }
 
